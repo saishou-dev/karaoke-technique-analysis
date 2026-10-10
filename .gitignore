@@ -1,0 +1,64 @@
+# ---- データは一切含めない（正本は G:\研究アーカイブ\ に置く） ----
+# 録音・録画・画像
+*.wav
+*.mp3
+*.flac
+*.mp4
+*.mov
+*.mkv
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+# 表・配列・モデル・ログ
+*.csv
+*.tsv
+*.json
+*.npy
+*.npz
+*.pt
+*.pth
+*.pkl
+*.joblib
+*.h5
+*.log
+*.bak
+*.zip
+*.7z
+# 台帳・DAM（第一興商）の採点データ・索引・検収ページ・録音/録画フォルダ
+G1_events*
+dam_api/
+dam_ai*
+index*.json
+review*.html
+viewer*.html
+kensyu*
+clips*/
+mobile_review/
+bands_*/
+results_*/
+dataset/
+out/
+feats/
+pairs/
+ビデオ素材/
+録音/
+# 作業コピーには置かない（秘書の正本・私的情報・認証情報）
+00_master/
+private/
+*.env
+.env*
+*secret*
+*token*
+*credential*
+*.pem
+*.key
+# Python / OS
+__pycache__/
+*.pyc
+.venv/
+.ipynb_checkpoints/
+Thumbs.db
+desktop.ini
+.DS_Store

@@ -1,0 +1,5 @@
+export LANG=C.UTF-8; cd ~/karaoke-vision
+KV_RESULTS_DIR='/mnt/g/研究アーカイブ/成果物/動画解析/dataset/_selftest_calib_20260915/results_0911' KV_CALIB_DIR='/mnt/g/研究アーカイブ/成果物/動画解析/dataset/_selftest_calib_20260915/calib_0911' .venv/bin/python '/mnt/g/研究アーカイブ/成果物/動画解析/scripts/calib_roi_20260915.py' 20260911 "CHEERS_20260911_105621" "Answer_20260911_130234" "lovin'_20260911_113934" >> '/mnt/g/研究アーカイブ/成果物/動画解析/dataset/_selftest_calib_20260915/calib_0911.log' 2>&1
+for v in "CHEERS_20260911_105621" "Answer_20260911_130234" "lovin'_20260911_113934"; do out='/mnt/g/研究アーカイブ/成果物/動画解析/dataset/_selftest_calib_20260915/results_0911/'"$v"; [ -f "$out/counter_events.csv" ] && continue
+  ( .venv/bin/python read_counters_wao.py '/mnt/g/研究アーカイブ/成果物/動画解析/bands_wao/'"$v".mp4 "$out" '/mnt/g/研究アーカイブ/成果物/動画解析/templates/wao_20260816/cluster_reps_wao_ext.npy' "$out/roi.json" > "$out/read_log.txt" 2>&1 ) &
+done; wait; tail -n 1 '/mnt/g/研究アーカイブ/成果物/動画解析/dataset/_selftest_calib_20260915/calib_0911.log'; ls '/mnt/g/研究アーカイブ/成果物/動画解析/dataset/_selftest_calib_20260915'/results_0911/*/counter_events.csv | wc -l
