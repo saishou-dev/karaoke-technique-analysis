@@ -33,7 +33,7 @@ dam_ai*
 index*.json
 review*.html
 viewer*.html
-kensyu*
+kensyu*.csv
 clips*/
 mobile_review/
 bands_*/

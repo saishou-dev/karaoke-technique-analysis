@@ -1,0 +1,131 @@
+<title>__TITLE__</title>
+<style>
+:root{--bg:#14161c;--panel:#1d2029;--line:#2b3040;--ink:#e6e9f0;--mute:#8a93a6;--ok:#34c759;--ng:#ff5e7a;--hold:#ffb020;--btn:#262a36;--btn-ink:#dfe3ec}
+:root:not([data-theme="light"]){--bg:#14161c}
+:root[data-theme="dark"]{--bg:#14161c}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,"Hiragino Sans","Noto Sans JP",system-ui,sans-serif;font-size:15px;overscroll-behavior:none;touch-action:pan-y;-webkit-user-select:none;user-select:none}
+#app{display:flex;flex-direction:column;height:100%;padding:0 16px;box-sizing:border-box}
+header{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 0 6px}
+#prog{font-variant-numeric:tabular-nums;color:var(--mute);font-size:14px;white-space:nowrap}
+#prog b{color:var(--ink);font-size:18px}
+.chip{display:inline-block;padding:3px 10px;border-radius:999px;font-weight:700;color:#111;font-size:14px}
+#label{font-size:14px;color:var(--mute);margin-left:6px}
+#vname{font-size:12px;color:var(--mute);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding-bottom:6px}
+#card{position:relative;flex:1;min-height:0;display:flex;flex-direction:column;gap:8px;border-radius:14px;background:var(--panel);padding:8px;box-sizing:border-box;will-change:transform;transition:transform .18s ease,opacity .18s ease}
+#card.nomotion{transition:none}
+video{width:100%;max-width:100%;aspect-ratio:16/9;background:#000;border-radius:8px;display:block;object-fit:contain}
+#pc{width:100%;height:150px;background:#191c24;border-radius:8px;display:block}
+#hint{font-size:12px;color:var(--mute);text-align:center;line-height:1.5}
+.stamp{position:absolute;top:18px;padding:6px 14px;border:3px solid;border-radius:10px;font-size:28px;font-weight:900;letter-spacing:.04em;opacity:0;transform:rotate(-8deg);pointer-events:none;background:rgba(20,22,28,.6)}
+#stOk{left:18px;color:var(--ok);border-color:var(--ok)}
+#stNg{right:18px;color:var(--ng);border-color:var(--ng);transform:rotate(8deg)}
+#done{display:none;flex:1;align-items:center;justify-content:center;text-align:center;line-height:1.8}
+#done textarea{width:100%;height:160px;background:#0f1116;color:var(--ink);border:1px solid var(--line);border-radius:8px;font-size:11px;margin-top:8px}
+#bar{position:sticky;bottom:0;display:grid;grid-template-columns:repeat(4,1fr);gap:8px;padding:10px 0 calc(10px + env(safe-area-inset-bottom,0px));background:var(--bg)}
+#bar button{height:52px;border:1px solid var(--line);border-radius:12px;background:var(--btn);color:var(--btn-ink);font-size:15px;font-weight:600;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px}
+#bar button small{font-size:10px;color:var(--mute);font-weight:400}
+#bar button:active{background:#333848}
+#bar button:focus-visible{outline:2px solid var(--ok)}
+#bar button.hold{color:var(--hold)}
+#crit{display:none;position:absolute;left:8px;right:8px;bottom:8px;background:#0f1116;border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-size:13px;line-height:1.6;color:var(--ink)}
+#save{font-size:11px;color:var(--mute);text-align:right;height:14px}
+#save.err{color:var(--ng)}
+@media (prefers-reduced-motion:reduce){#card{transition:none}}
+</style>
+<div id="app">
+<header><div><span id="chip" class="chip"></span><span id="label"></span></div><div id="prog"></div></header>
+<div id="vname"></div>
+<div id="card">
+  <video id="vid" autoplay loop muted playsinline webkit-playsinline></video>
+  <canvas id="pc"></canvas>
+  <div id="hint">← 左へスワイプ＝× 見えない／違う　　右へスワイプ＝○ 上昇が見えた →</div>
+  <div class="stamp" id="stOk">○ OK</div><div class="stamp" id="stNg">× NG</div>
+  <div id="crit">__FOOT__</div>
+</div>
+<div id="done"></div>
+<div id="save"></div>
+<div id="bar">
+  <button id="bUndo">↶ 戻る<small>1つ前をやり直す</small></button>
+  <button id="bHold" class="hold">保留<small>あとで見る</small></button>
+  <button id="bReplay">↻ 再生<small>もう一度</small></button>
+  <button id="bCrit">基準<small>判定の決まり</small></button>
+</div>
+</div>
+<script>
+const SESS="__SESS__";
+const EV=__EV__;
+__COL__
+__NAME__
+const NN=["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+const KEY="kensyu-mobile-"+SESS;
+let J={};try{J=JSON.parse(localStorage.getItem(KEY)||"{}")}catch(e){J={}}
+let idx=0;
+const vid=document.getElementById("vid"),pc=document.getElementById("pc"),ctx=pc.getContext("2d"),card=document.getElementById("card");
+const $=id=>document.getElementById(id);
+function firstOpen(){idx=0;while(idx<EV.length&&J[EV[idx].id])idx++}
+function counts(){let o=0,x=0,k=0;for(const id in J){const v=J[id].v;if(v==="o")o++;else if(v==="x")x++;else k++}return{o,x,k}}
+__DRAWPITCH__
+function show(){
+  if(idx>=EV.length){finish();return}
+  $("done").style.display="none";card.style.display="";
+  const e=EV[idx];
+  $("chip").textContent=NAME[e.c];$("chip").style.background=COL[e.c];
+  $("label").textContent=e.n+" 回目";
+  $("vname").textContent=e.video+" @"+e.vt.toFixed(1)+"s";
+  const c=counts();
+  $("prog").innerHTML=`<b>${idx+1}</b> / ${EV.length}　○${c.o} ×${c.x} 保留${c.k}`;
+  vid.src="clips/"+e.f+".mp4";vid.play().catch(()=>{});
+  drawPitch(e);
+}
+function finish(){
+  card.style.display="none";const c=counts();const d=$("done");d.style.display="flex";
+  d.innerHTML=`<div>🎉 全${EV.length}件の検収完了<br>○ ${c.o}　× ${c.x}　保留 ${c.k}<br><span style="color:var(--mute);font-size:13px">判定はこのページに保存済み。Claudeが読み取ってCSVにします。<br>保留があれば「戻る」で見直せます。</span><br><button id="bCsv" style="margin-top:10px;padding:8px 14px;border-radius:10px;border:1px solid var(--line);background:var(--btn);color:var(--btn-ink)">CSVを表示（控え）</button><textarea id="csv" style="display:none" readonly></textarea></div>`;
+  $("prog").innerHTML=`<b>${EV.length}</b> / ${EV.length}`;
+  $("bCsv").onclick=()=>{const t=$("csv");t.style.display=t.style.display==="none"?"block":"none";t.value=csv()};
+}
+function csv(){let s="event_id,video,counter,count_value,judgement\n";for(const e of EV){const v=J[e.id];if(!v)continue;s+=`${e.id},${e.video},${e.c},${e.n},${v.v==="o"?"OK":v.v==="x"?"NG":"HOLD"}\n`}return s}
+// --- 保存：localStorage＋db（kensyu/<sess>）。書き込みは1本ずつ・400msでまとめる ---
+let db=null,writing=null,dirty=false;
+function persist(){try{localStorage.setItem(KEY,JSON.stringify(J))}catch(e){}dirty=true;scheduleWrite()}
+let timer=null;
+function scheduleWrite(){clearTimeout(timer);timer=setTimeout(flush,400)}
+async function flush(){
+  if(!db||!dirty)return;if(writing){writing.then(flush);return}
+  dirty=false;$("save").textContent="保存中…";$("save").className="";
+  writing=db.doc("kensyu/"+SESS).set({j:J,n:Object.keys(J).length,updated:new Date().toISOString()})
+    .then(()=>{$("save").textContent="保存済み "+new Date().toLocaleTimeString("ja-JP",{hour:"2-digit",minute:"2-digit"})})
+    .catch(err=>{$("save").textContent="保存できませんでした（"+(err&&err.code||"error")+"）・端末には残っています";$("save").className="err";dirty=true})
+    .finally(()=>{writing=null;if(dirty)scheduleWrite()});
+}
+function judge(v){if(idx>=EV.length)return;J[EV[idx].id]={v,t:Date.now()};persist();idx++;show()}
+function undo(){if(idx>0){idx--;delete J[EV[idx].id];persist();show()}}
+// --- スワイプ：右＝○ OK／左＝× NG（9/30 本人「右手操作なので右＝OK」） ---
+let sx=null,sy=null,dx=0,dragging=false;
+const TH=90;
+card.addEventListener("touchstart",e=>{if(idx>=EV.length)return;const t=e.touches[0];sx=t.clientX;sy=t.clientY;dx=0;dragging=true;card.classList.add("nomotion")},{passive:true});
+card.addEventListener("touchmove",e=>{if(!dragging)return;const t=e.touches[0];dx=t.clientX-sx;const dy=t.clientY-sy;if(Math.abs(dy)>Math.abs(dx)*1.5&&Math.abs(dx)<20)return;
+  card.style.transform=`translateX(${dx}px) rotate(${dx/30}deg)`;const p=Math.min(Math.abs(dx)/TH,1);$("stOk").style.opacity=dx>0?p:0;$("stNg").style.opacity=dx<0?p:0},{passive:true});
+function endDrag(){if(!dragging)return;dragging=false;card.classList.remove("nomotion");
+  if(dx>=TH){fly(1,()=>judge("o"))}else if(dx<=-TH){fly(-1,()=>judge("x"))}else{card.style.transform="";$("stOk").style.opacity=0;$("stNg").style.opacity=0}}
+card.addEventListener("touchend",endDrag);card.addEventListener("touchcancel",endDrag);
+function fly(dir,cb){card.style.transform=`translateX(${dir*120}vw) rotate(${dir*12}deg)`;card.style.opacity="0";setTimeout(()=>{card.classList.add("nomotion");card.style.transform="";card.style.opacity="";$("stOk").style.opacity=0;$("stNg").style.opacity=0;cb();requestAnimationFrame(()=>card.classList.remove("nomotion"))},180)}
+// --- 下部ボタン・キー（PCでも使える） ---
+$("bUndo").onclick=undo;$("bHold").onclick=()=>judge("k");$("bReplay").onclick=()=>{vid.currentTime=0;vid.play().catch(()=>{})};
+$("bCrit").onclick=()=>{const c=$("crit");c.style.display=c.style.display==="block"?"none":"block"};
+document.addEventListener("keydown",e=>{const k=e.key.toLowerCase();if(k==="o"||k==="j")judge("o");else if(k==="x"||k==="f")judge("x");else if(k==="k")judge("k");else if(k==="u")undo();else if(k===" "){e.preventDefault();vid.currentTime=0;vid.play().catch(()=>{})}});
+// --- 起動：端末の記録で表示→dbが来たら合流（新しい方を採る）して再表示 ---
+firstOpen();show();
+(async()=>{
+  try{db=await window.claude?.use?.("db")}catch(e){db=null}
+  if(!db){$("save").textContent="端末内にのみ保存（claude.aiで開くと同期）";return}
+  try{
+    const snap=await db.doc("kensyu/"+SESS).get();const R=(snap.exists&&snap.data()&&snap.data().j)||{};let changed=false;
+    for(const id in R){if(!J[id]||(R[id].t||0)>(J[id].t||0)){J[id]=R[id];changed=true}}
+    try{localStorage.setItem(KEY,JSON.stringify(J))}catch(e){}
+    if(Object.keys(J).some(id=>!R[id]||(J[id].t||0)>(R[id].t||0))){dirty=true;flush()}
+    else $("save").textContent="同期済み";
+    if(changed){firstOpen();show()}
+  }catch(e){$("save").textContent="同期できませんでした・端末には残っています";$("save").className="err"}
+})();
+</script>
