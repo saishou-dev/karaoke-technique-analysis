@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""研究セッションの録音WAVから「歌みた収録」と同じ観点の数値を曲ごとに出す（2026-09-29・本人依頼「録音を歌みた収録と同じように分析して毎回」）。
+r"""研究セッションの録音WAVから「歌みた収録」と同じ観点の数値を曲ごとに出す（2026-09-29・本人依頼「録音を歌みた収録と同じように分析して毎回」）。
    入力＝録音フォルダ（曲名_日時.wav または mapping.csv でT##→曲名）・出力＝<out>/歌声分析_<session>.md と .csv
    指標＝音程の乗り（12平均律格子からの偏差・持続音のみ）／強弱の幅／鳴りの再現性（フレーズ間の音量ばらつき）／帯域バランス（2〜4kHz÷低域）／
         ビブラート（回数・速さ・深さ）／有声率・音域／（任意）DAM点数（Hearts CSV）
@@ -14,11 +14,23 @@ a = ap.parse_args(); os.makedirs(a.out, exist_ok=True)
 REC = "G:/研究アーカイブ/録音"; wavdir = a.wavdir or f"{REC}/songs_{a.session}_raw"
 SR = 22050; HOP = 220; FR = SR / HOP
 # 曲名の対応（mapping.csv があれば T## → song）
-names = {}
+names = {}; mscore = {}  # 2026-10-11 追記: mapping 側の点数（score列／status の score=／8/07 の track_name 末尾）を予備に持つ
 mp = os.path.join(wavdir, "mapping.csv")
 if os.path.exists(mp):
     for r in csv.DictReader(open(mp, encoding="utf-8-sig")):
-        k = r.get("renamed") or r.get("wav_file") or ""; names[os.path.basename(k)] = r.get("song") or r.get("track_name") or ""
+        k = r.get("renamed") or r.get("wav_file") or ""; song = r.get("song") or r.get("track_name") or ""; sc = r.get("score") or ""
+        if not sc:
+            m = re.search(r"score=([\d.]+)", r.get("status") or ""); sc = m.group(1) if m else ""
+        m2 = re.match(r"^(.*?)\s+(\d{2,3}\.\d{1,3})$", song)
+        if m2: song = m2.group(1); sc = sc or m2.group(2)
+        names[os.path.basename(k)] = song
+        if sc: mscore[os.path.basename(k)] = float(sc)
+def norm(s):  # 曲名の正規化（[生音]・(生音)・括弧書き・空白を除き小文字）
+    s = re.sub(r"\[生音\]|[（(]生音[)）]", "", str(s)); s = re.sub(r"[（(\[].*?[)）\]]", "", s); return re.sub(r"\s+", "", s).lower()
+def skey(p):  # 録音の時刻順（ファイル名 _YYYYMMDD_HHMMSS → なければ Track(N) の N）
+    b = os.path.basename(p); m = re.search(r"_(\d{8}_\d{6})", b)
+    if m: return (0, m.group(1))
+    m = re.search(r"\((\d+)\)", b); return (1, int(m.group(1)) if m else 0)
 def analyze(path):
     y, sr = sf.read(path, dtype="float32", always_2d=True); y = y.mean(1)
     if sr != SR: y = librosa.resample(y, orig_sr=sr, target_sr=SR)
@@ -75,24 +87,44 @@ def analyze(path):
         dyn_range=round(float(dyn), 1), phrase_sd=round(float(np.nanstd(ph)), 1), band=round(float(band), 1),
         vib_n=int(len(vib)), vib_rate=round(float(vib[:, 0].mean()), 1) if len(vib) else np.nan, vib_depth=round(float(vib[:, 1].mean()), 0) if len(vib) else np.nan,
         range_lo=round(float(np.nanpercentile(stv, 5)), 1), range_hi=round(float(np.nanpercentile(stv, 95)), 1))
-dam = {}
+dam = []  # 2026-10-11 置換: 当日の全採点行を (時刻, 正規化曲名, 点, アーティスト, 機種) で持ち、録音ファイルの時刻と最近傍で結合
 if a.dam and os.path.exists(a.dam):
     import pandas as pd
-    d = pd.read_csv(a.dam, encoding="utf-8-sig"); 
+    d = pd.read_csv(a.dam, encoding="utf-8-sig", dtype=str)
+    col = next((c for c in ("totalScore", "totalPoints", "totalPoint", "point") if c in d.columns), None)
     for _, r in d.iterrows():
-        sd = str(r.get("scoringDateTime", ""))[:8]
-        if sd != a.session: continue
-        col = next((c for c in ("totalScore", "totalPoints", "totalPoint", "point") if c in d.columns), None)
-        val = float(r.get(col, 0)) if col else 0.0; val = val / 1000 if val > 1000 else val
-        dam.setdefault(re.sub(r"[（(].*?[)）]", "", str(r.get("songName", ""))).strip(), []).append(round(val, 3))
+        sd = str(r.get("scoringDateTime", ""))
+        if sd[:8] != a.session: continue
+        try: val = float(r.get(col, 0)) if col else 0.0
+        except Exception: val = 0.0
+        val = val / 1000 if val > 1000 else val
+        dam.append(dict(t=sd[8:14], key=norm(r.get("songName", "")), score=round(val, 3), artist=str(r.get("artistName", "")), machine={"ai": "Ai", "hearts": "WAO"}.get(str(r.get("src", "")), ""), used=False))
+def tsec(hhmmss): return int(hhmmss[:2]) * 3600 + int(hhmmss[2:4]) * 60 + int(hhmmss[4:6])
+files = sorted(glob.glob(os.path.join(wavdir, "*.wav")), key=skey)
+match = {}
+cands = []
+for w in files:
+    base = os.path.basename(w); song = names.get(base) or os.path.splitext(base)[0].split("_2026")[0]; key = norm(song)
+    m = re.search(r"_\d{8}_(\d{6})", base); ts = m.group(1) if m else None
+    for i, drow in enumerate(dam):
+        if drow["key"] != key: continue
+        if ts: diff = abs(tsec(ts) - tsec(drow["t"]))
+        elif base in mscore and abs(mscore[base] - drow["score"]) < 0.002: diff = 0  # 時刻なし（8/07）＝点数一致で結合
+        else: continue
+        if diff <= 420: cands.append((diff, base, i))
+for diff, base, i in sorted(cands):
+    if base in match or dam[i]["used"]: continue
+    match[base] = dam[i]; dam[i]["used"] = True
 rows = []
-for w in sorted(glob.glob(os.path.join(wavdir, "*.wav"))):
+for w in files:
     base = os.path.basename(w); song = names.get(base) or os.path.splitext(base)[0].split("_2026")[0]
     try: m = analyze(w)
     except Exception as e: m = dict(error=str(e))
-    key = re.sub(r"[（(].*?[)）]", "", song).strip(); m["dam"] = (dam[key].pop(0) if key in dam and dam[key] else "") if dam else ""; rows.append(dict(file=base, song=song, **m)); print(base, song, {k: v for k, v in m.items() if k in ("pitch_dev_med", "dyn_range", "band", "vib_n")}, flush=True)
+    dm = match.get(base); m["dam"] = dm["score"] if dm else mscore.get(base, ""); m["artist"] = dm["artist"] if dm else ""; m["machine"] = dm["machine"] if dm else ""
+    mt = re.search(r"_\d{8}_(\d{6})", base); m["time"] = mt.group(1) if mt else (dm["t"] if dm else "")
+    rows.append(dict(file=base, song=song, **m)); print(base, song, m.get("dam"), m.get("machine"), {k: v for k, v in m.items() if k in ("pitch_dev_med", "dyn_range", "band", "vib_n")}, flush=True)
 # 出力
-keys = ["file", "song", "dam", "dur", "voiced", "n_notes", "pitch_dev_med", "pitch_within25", "dyn_range", "phrase_sd", "band", "vib_n", "vib_rate", "vib_depth", "range_lo", "range_hi"]
+keys = ["file", "song", "time", "machine", "artist", "dam", "dur", "voiced", "n_notes", "pitch_dev_med", "pitch_within25", "dyn_range", "phrase_sd", "band", "vib_n", "vib_rate", "vib_depth", "range_lo", "range_hi"]
 with open(f"{a.out}/歌声分析_{a.session}.csv", "w", newline="", encoding="utf-8-sig") as f:
     wri = csv.DictWriter(f, fieldnames=keys, extrasaction="ignore"); wri.writeheader(); wri.writerows(rows)
 def n2(x): return "" if x is None or (isinstance(x, float) and np.isnan(x)) else x
