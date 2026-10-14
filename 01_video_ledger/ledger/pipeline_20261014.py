@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """回収パイプライン監督 2026-10-14 **WAO** 版（pipeline_20260915.py の派生・Windows python・タスクスケジューラ kv_pipeline_20261014 で起動）。
    工程：probe → crop（帯pts表＋ゲート）→ calib → read（WSLランナー×4）→ verify → sync → g1（帯ptsゲート）→ DONE（各工程スクリプトは 9/15 版をそのまま呼ぶ）
-   10/6 の特殊事情＝同一セッションで機種が途中で変わった（前半 9曲 DAM Ai／後半 23曲 WAO）。9/15 版との差：
+   10/14 のセッション＝全曲 DAM WAO(Hearts) の1機種・30曲（採点 10:28:24〜12:53:06）。構造は 10/6 版（機種別）をそのまま踏襲する。9/15 版との差：
      (1) 対象動画＝rename_mapping.csv の machine=wao の動画だけ（kv_config_20261014.Cfg1014.videos()）。n_videos もその数。
      (2) probe は対象動画の一覧ファイル（pipe_dir/probe_videos.txt）を launch_probe_20261014.sh に渡して起動（他機種の動画を拾わない・
          スクリプトファイル経由＝launch_read と同じ型。9/15・9/24 はインライン起動が無反応だった）。起動結果（pgrep）をログに残し、
