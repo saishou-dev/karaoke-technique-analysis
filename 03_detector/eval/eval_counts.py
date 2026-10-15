@@ -5,9 +5,12 @@
 import sys, json, argparse, csv, collections
 import numpy as np
 sys.stdout.reconfigure(encoding='utf-8')
+sys.path.insert(0, "G:/研究アーカイブ/成果物/動画解析/scripts")
+from song_valid_range_20261015 import clip_span  # 観測できた区間（2026-10-15 追加）
+
 ROOT = "G:/研究アーカイブ/成果物/動画解析/g3v2_20260928"
 TYPES = ["shakuri", "kobushi", "vibrato", "fall", "accent", "hammering"]
-ap = argparse.ArgumentParser(); ap.add_argument("--pred", required=True); ap.add_argument("--win", type=float, default=30.0)
+ap = argparse.ArgumentParser(); ap.add_argument("--pred", required=True); ap.add_argument("--win", type=float, default=30.0); ap.add_argument("--valid_range", default="exclude", choices=["exclude", "keep"])
 a = ap.parse_args()
 index = {d["video"]: d for d in json.load(open(f"{ROOT}/index.json", encoding="utf-8"))}
 pred = collections.defaultdict(list)
@@ -19,7 +22,7 @@ rows = []; agg = {c: [0, 0, 0, 0] for c in TYPES}  # sum|d|, sum true, n songs, 
 wagg = {c: [0, 0, 0] for c in TYPES}  # sum|d| per window, sum true, n windows exact
 wtot = {c: 0 for c in TYPES}
 for v in videos:
-    d = index[v]; lo, hi = d["span"]
+    d = index[v]; lo, hi = clip_span(v, d["span"], float(d.get("offset", 0.0)), a.valid_range)[0]
     for c in TYPES:
         tr = [t for cc, t in d["events"] if cc == c and lo <= t <= hi]
         pr = [t for t in pred.get((v, c), []) if lo <= t <= hi]

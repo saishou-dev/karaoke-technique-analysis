@@ -11,6 +11,8 @@ B. 検収台帳（本人の目視○×・正解G1イベント単位）＝ 動画
 使い方: python build_ledgers_20261008.py [--tags v2d,v2d2,v2e --lag 0.3 --tol 1.0 --test 20260924 --dev 20260911] [--skip_a] [--skip_b]"""
 import os, sys, re, json, csv, glob, time, argparse, warnings, collections
 import numpy as np
+sys.path.insert(0, "G:/研究アーカイブ/成果物/動画解析/scripts")
+from song_valid_range_20261015 import clip_span  # 観測できた区間（2026-10-15 追加）
 warnings.filterwarnings("ignore"); sys.stdout.reconfigure(encoding="utf-8")
 T_START = time.time()
 BASE = "G:/研究アーカイブ/成果物/動画解析"; ROOT = f"{BASE}/g3v2_20260928"; FR = 100
@@ -21,6 +23,8 @@ ap = argparse.ArgumentParser()
 ap.add_argument("--tags", default="v2d,v2d2,v2e"); ap.add_argument("--lag", type=float, default=0.3); ap.add_argument("--tol", type=float, default=1.0)
 ap.add_argument("--test", default="20260924"); ap.add_argument("--dev", default="20260911"); ap.add_argument("--hid", type=int, default=128); ap.add_argument("--threads", type=int, default=8)
 ap.add_argument("--skip_a", action="store_true"); ap.add_argument("--skip_b", action="store_true")
+ap.add_argument("--valid_range", default="exclude", choices=["exclude", "keep"],
+                help="exclude（既定）＝観測できた区間（dataset/song_valid_range.csv）の外にある正解・予測を評価から除く／keep＝従来（2026-10-15 追加）")
 a = ap.parse_args(); TAGS = a.tags.split(",")
 
 def wcsv(path, rows, cols):
@@ -83,7 +87,7 @@ def build_a():
         def f1_dev(c, th, md):
             k = TYPES.index(c); H = NP = NT = 0
             for d in dev:
-                lo, hi = d["span"]; tr = [t for cc, t in d["events"] if cc == c and lo <= t <= hi]; pr = [t for t, _ in pick(P[d["video"]][k], th, md) if lo <= t <= hi]
+                lo, hi = clip_span(d["video"], d["span"], float(d.get("offset", 0.0)), a.valid_range)[0]; tr = [t for cc, t in d["events"] if cc == c and lo <= t <= hi]; pr = [t for t, _ in pick(P[d["video"]][k], th, md) if lo <= t <= hi]
                 H += len(match(pr, tr, 1.0)); NP += len(pr); NT += len(tr)
             return prf(H, NP - H, NT - H)[2]
         best = {}
@@ -93,7 +97,8 @@ def build_a():
     print("[A] しきい値(thr, 最短間隔s)=", best)
     rows = []; agg = collections.OrderedDict()
     for d in sorted(test, key=lambda d: d["video"]):
-        video = d["video"]; song = video.rsplit("_", 2)[0]; lo, hi = d["span"]; off = float(d.get("offset", 0.0))
+        video = d["video"]; song = video.rsplit("_", 2)[0]; off = float(d.get("offset", 0.0))
+        lo, hi = clip_span(video, d["span"], off, a.valid_range)[0]   # 観測できた区間だけで評価する（既定 exclude・2026-10-15）
         PR = probs_of(np.load(f"{ROOT}/feats/{video}.npz"))
         for c in TYPES:
             pred = [(t, p) for t, p in pick(PR[TYPES.index(c)], *best[c]) if lo <= t <= hi]
