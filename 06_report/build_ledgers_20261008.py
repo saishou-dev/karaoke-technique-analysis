@@ -25,7 +25,10 @@ ap.add_argument("--test", default="20260924"); ap.add_argument("--dev", default=
 ap.add_argument("--skip_a", action="store_true"); ap.add_argument("--skip_b", action="store_true")
 ap.add_argument("--valid_range", default="exclude", choices=["exclude", "keep"],
                 help="exclude（既定）＝観測できた区間（dataset/song_valid_range.csv）の外にある正解・予測を評価から除く／keep＝従来（2026-10-15 追加）")
+ap.add_argument("--suffix", default="", help="出力ファイル名の末尾に付ける文字（例 _keep）。既定＝空＝従来のファイル名（2026-10-15 追加）")
+ap.add_argument("--prob_cache", default="", help="CRNN の出力確率を .npy で保存／再利用するディレクトリ。同じ tags・lag・hid なら予測は入力だけで決まるので、valid_range を変えた再計算で推論をやり直さずに済む（2026-10-15 追加）")
 a = ap.parse_args(); TAGS = a.tags.split(",")
+SFX = a.suffix
 
 def wcsv(path, rows, cols):
     with open(path, "w", newline="", encoding="utf-8-sig") as f:
@@ -42,7 +45,7 @@ def build_a():
     torch.set_num_threads(a.threads)
     index = json.load(open(f"{ROOT}/index.json", encoding="utf-8"))
     test = [d for d in index if d["session"] == a.test]
-    print(f"[A] test={a.test} {len(test)}曲  tags={TAGS} lag={a.lag} tol=±{a.tol}s")
+    print(f"[A] test={a.test} {len(test)}曲  tags={TAGS} lag={a.lag} tol=±{a.tol}s valid_range={a.valid_range} suffix={SFX or '(なし)'}")
     def feats_of(z):
         lm = z["logmel"].astype(np.float32); T = lm.shape[1]; st = z["st"]; v = z["voiced"]
         stn = np.where(v > 0, (st - 60.0) / 12.0, 0.0).astype(np.float32)
@@ -64,6 +67,14 @@ def build_a():
     def probs_of(z):
         x = torch.tensor(feats_of(z)[None])
         with torch.no_grad(): return np.mean([torch.sigmoid(n_((x - m_) / s_))[0].numpy() for n_, m_, s_ in nets], 0)
+    def probs_cached(video):
+        """予測確率は（feats, tags, lag前の素の確率, hid）だけで決まり valid_range には依らないので、
+           --prob_cache を付けた再計算では .npy を読み直して推論を省く（2026-10-15 追加・数値は完全に同一）。"""
+        if not a.prob_cache: return probs_of(np.load(f"{ROOT}/feats/{video}.npz"))
+        os.makedirs(a.prob_cache, exist_ok=True)
+        p = f"{a.prob_cache}/{video}__{'+'.join(TAGS)}_h{a.hid}.npy"
+        if os.path.exists(p): return np.load(p)
+        pr = probs_of(np.load(f"{ROOT}/feats/{video}.npz")); np.save(p, pr); return pr
     def pick(prob, thr, md):
         w = int(md * FR); n = len(prob)
         return [(i / FR + a.lag, float(prob[i])) for i in range(1, n - 1) if prob[i] >= thr and prob[i] >= prob[max(0, i - w):min(n, i + w + 1)].max()]
@@ -83,7 +94,7 @@ def build_a():
         best = {c: tuple(v) for c, v in json.load(open(thr_file, encoding="utf-8")).items()}; print(f"[A] しきい値キャッシュ: {thr_file}")
     else:
         print(f"[A] しきい値を dev({a.dev}) で決定中…"); dev = [d for d in index if d["session"] == a.dev and os.path.exists(f"{ROOT}/feats/{d['video']}.npz")]
-        P = {d["video"]: probs_of(np.load(f"{ROOT}/feats/{d['video']}.npz")) for d in dev}
+        P = {d["video"]: probs_cached(d["video"]) for d in dev}
         def f1_dev(c, th, md):
             k = TYPES.index(c); H = NP = NT = 0
             for d in dev:
@@ -99,7 +110,7 @@ def build_a():
     for d in sorted(test, key=lambda d: d["video"]):
         video = d["video"]; song = video.rsplit("_", 2)[0]; off = float(d.get("offset", 0.0))
         lo, hi = clip_span(video, d["span"], off, a.valid_range)[0]   # 観測できた区間だけで評価する（既定 exclude・2026-10-15）
-        PR = probs_of(np.load(f"{ROOT}/feats/{video}.npz"))
+        PR = probs_cached(video)
         for c in TYPES:
             pred = [(t, p) for t, p in pick(PR[TYPES.index(c)], *best[c]) if lo <= t <= hi]
             truth = [t for cc, t in d["events"] if cc == c and lo <= t <= hi]
@@ -119,7 +130,7 @@ def build_a():
         g = [x for (_, vv, _), x in agg.items() if vv == video]
         print(f"  {video:<40} 一致 {sum(x['tp'] for x in g):>3}／誤検知 {sum(x['fp'] for x in g):>3}／見逃し {sum(x['fn'] for x in g):>3}")
     cols = ["session", "song", "video", "technique", "technique_ja", "kind", "pred_time_sec", "truth_time_sec", "diff_sec", "score", "truth_video_time_sec"]
-    wcsv(f"{OUT}/検出照合台帳_test{a.test}.csv", rows, cols)
+    wcsv(f"{OUT}/検出照合台帳_test{a.test}{SFX}.csv", rows, cols)
     # 集計（曲×技法・曲ALL・技法ALL・全体）
     def srow(song, video, c, tp, fp, fn):
         p, r, f = prf(tp, fp, fn)
@@ -134,11 +145,11 @@ def build_a():
         g = [x for (_, _, cc), x in agg.items() if cc == c]; tech_tot[c] = (sum(x["tp"] for x in g), sum(x["fp"] for x in g), sum(x["fn"] for x in g)); srows.append(srow("ALL", "ALL", c, *tech_tot[c]))
     TT = tuple(sum(t[i] for t in tech_tot.values()) for i in range(3)); srows.append(srow("ALL", "ALL", "ALL", *TT))
     scols = ["song", "video", "technique", "technique_ja", "n_truth", "n_pred", "TP", "FP", "FN", "precision", "recall", "f1"]
-    wcsv(f"{OUT}/検出照合_集計_test{a.test}.csv", srows, scols)
+    wcsv(f"{OUT}/検出照合_集計_test{a.test}{SFX}.csv", srows, scols)
     # md
     L = [f"# 検出照合 集計（test {a.test}・{len(test)}曲）", "",
          f"- 予測＝学習済みCRNNアンサンブル {'+'.join(TAGS)}（確率平均・lag +{a.lag}s）。しきい値・最短間隔＝dev {a.dev} で技法別に F1(±1s) 最大（{os.path.basename(thr_file)}）。新しい学習なし。",
-         f"- 照合＝予測と正解（G1・録音WAV時刻）の ±{a.tol}s 一致・貪欲1対1（render_pitchbar.py と同規則）。採点区間（span）内のみ。",
+         f"- 照合＝予測と正解（G1・録音WAV時刻）の ±{a.tol}s 一致・貪欲1対1（render_pitchbar.py と同規則）。採点区間（span）内のみ。--valid_range={a.valid_range}（exclude＝span を観測できた区間 dataset/song_valid_range.csv と重ねて狭める／keep＝従来）。",
          "- TP＝一致（予測が正解と一致）／FP＝誤検知（予測だけ）／FN＝見逃し（正解だけ）。適合率=TP/(TP+FP)・再現率=TP/(TP+FN)。",
          f"- しきい値(thr, 最短間隔s)＝{ {JA[c]: best[c] for c in TYPES} }", "",
          "## 技法別（28曲合計）", "", "| 技法 | 正解 | 予測 | TP | FP | FN | 適合率 | 再現率 | F1 |", "|---|---|---|---|---|---|---|---|---|"]
@@ -149,10 +160,10 @@ def build_a():
     for s, v in vids:
         tp, fp, fn = vid_tot(v); p, r, f = prf(tp, fp, fn)
         L.append(f"| {s} | {tp + fn} | {tp + fp} | {tp} | {fp} | {fn} | {p:.3f} | {r:.3f} | {f:.3f} |")
-    L += ["", f"- 台帳本体＝検出照合台帳_test{a.test}.csv（{len(rows)}行＝TP {TT[0]}＋FP {TT[1]}＋FN {TT[2]}）。列＝session, song, video, technique, technique_ja, kind, pred_time_sec, truth_time_sec, diff_sec(pred−truth), score(予測確率), truth_video_time_sec(録画時刻＝G1台帳の video_time_sec と対応)。",
+    L += ["", f"- 台帳本体＝検出照合台帳_test{a.test}{SFX}.csv（{len(rows)}行＝TP {TT[0]}＋FP {TT[1]}＋FN {TT[2]}）。列＝session, song, video, technique, technique_ja, kind, pred_time_sec, truth_time_sec, diff_sec(pred−truth), score(予測確率), truth_video_time_sec(録画時刻＝G1台帳の video_time_sec と対応)。",
           "- 時刻の単位＝秒。pred/truth は録音WAVの時刻（index.json の events＝audio_time_sec）。録画の時刻は truth_video_time_sec（= truth − offset）。",
           f"- 生成＝build_ledgers_20261008.py（{time.strftime('%Y-%m-%d %H:%M')}）"]
-    open(f"{OUT}/検出照合_集計_test{a.test}.md", "w", encoding="utf-8").write("\n".join(L) + "\n")
+    open(f"{OUT}/検出照合_集計_test{a.test}{SFX}.md", "w", encoding="utf-8").write("\n".join(L) + "\n")
     # lulu 一致確認（#14 の図＝一致24／誤検知119／見逃し27）
     lulu = [v for s, v in vids if v.lower().startswith("lulu")]
     if lulu:
@@ -226,7 +237,7 @@ def build_b():
                         source=r["source"], judged_at=r["judged_at"], n_times_judged=len(hs), prior_judgements=prior, in_G1_ledger=("1" if g else "0")))
     out.sort(key=lambda r: (r["session"], r["video"], float(r["video_time_sec"]) if r["video_time_sec"] != "" else 1e9, r["counter"], r["count_value"]))
     cols = ["session", "video", "counter", "counter_ja", "count_value", "video_time_sec", "stable_read_time_sec", "judgement", "source", "judged_at", "n_times_judged", "prior_judgements", "in_G1_ledger"]
-    wcsv(f"{OUT}/検収台帳_統合.csv", out, cols)
+    wcsv(f"{OUT}/検収台帳_統合{SFX}.csv", out, cols)
     # 集計
     g1_by_sess = collections.Counter(r["session"] for r in g1.values())
     sess = sorted({r["session"] for r in out})
@@ -249,7 +260,7 @@ def build_b():
     chg = [r for r in out if r["prior_judgements"] and any(x.split(":")[1] != r["judgement"] for x in r["prior_judgements"].split(";"))]
     L += ["", f"- 判定が途中で変わったイベント＝{len(chg)}件（prior_judgements 列に旧判定・最終判定は judgement 列）。", f"- 台帳本体＝検収台帳_統合.csv（{len(out)}行・1行＝1イベントの最終判定）。",
           f"- 生成＝build_ledgers_20261008.py（{time.strftime('%Y-%m-%d %H:%M')}）"]
-    open(f"{OUT}/検収_集計.md", "w", encoding="utf-8").write("\n".join(L) + "\n")
+    open(f"{OUT}/検収_集計{SFX}.md", "w", encoding="utf-8").write("\n".join(L) + "\n")
     print(f"[B] 台帳 {len(out)}行  ", {s: f"OK {collections.Counter(r['judgement'] for r in out if r['session'] == s)['OK']}/{sum(1 for r in out if r['session'] == s)}" for s in sess})
     return out
 
