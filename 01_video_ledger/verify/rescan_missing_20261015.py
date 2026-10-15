@@ -11,7 +11,14 @@ rescan_missing_20260911.py／rescan_missing_20260915.py の一般化。verify_*.
 出力: dataset/found_20261015/<key>/rescan_missing.csv・evidence/*.png・roi/<video>.json（使った ROI の実体）
 
 規則（本人指示 2026-10-15）：読み過ぎ（read > csv）が 1 件でもある曲は OVERCOUNT として記録し、その曲の
-欠落候補は一切出さない（追記対象から外す）。20261014 は対象外（別件調査中）。
+欠落候補は一切出さない（追記対象から外す）。
+
+追記（2026-10-15 11:40）：
+  - セッションキー `20261014` を追加（読取器 v0.8e で作り直した `results_wao_20261014`・`verify_20261014_wao.csv` が対象）。
+    ORDER には入れていないので、引数を省いたときの挙動（過去5セッション）は変わらない。
+  - 環境変数 `KV_FOUND_INVERT=1` で**反転二値化フォールバック**（通常の極性で読めなかった ROI を 255−ROI で読み直す）を
+    read_val_wao／read_val_ai に効かせられる。既定は 0＝従来どおり（10/15 午前の過去5セッションの結果はそのまま再現できる）。
+    根拠＝found_pin_20261015.py の両極性読取（明背景では数字が暗くなり連結成分が取れない）。
 """
 import os, sys, csv, json, numpy as np, cv2
 
@@ -42,8 +49,13 @@ SESS = {
                         bands="bands_wao", pts="pts_bands_20260911", roi="default",
                         g1="G1_events_20260911_bandpts_rerun_20260914.csv",
                         session=20260911, pts_source="pts_bands_20260911"),
+    # 10/14（読取器 v0.8e で作り直した正式結果が対象。v0.8d の結果＝results_wao_20261014.pre_v08e_20261015 は見ない）
+    "20261014":    dict(reader="wao", verify="verify_20261014_wao.csv", results="results_wao_20261014",
+                        bands="bands_wao", pts="pts_bands_20261014", roi="results",
+                        g1="G1_events_20261014_wao.csv", session=20261014, pts_source="pts_bands_20261014"),
 }
 ORDER = ["20261006wao", "20261006ai", "20260924", "20260915r", "20260911"]
+INVERT_FB = os.environ.get("KV_FOUND_INVERT", "0") == "1"  # 1＝反転二値化フォールバックを有効（既定は従来どおり無効）
 
 # ---------- WAO 読取（rescan_missing_20260911.py と同一） ----------
 ROI_WAO_DEFAULT = json.load(open(os.path.join(ROOT, "templates/wao_20260816/roi_wao.json"), encoding="utf-8"))
@@ -109,6 +121,13 @@ def classify(rg, b, RF, LAB, ncc):
 
 
 def read_val_wao(rg, ncc=0.60):
+    v = _read_val_wao(rg, ncc)
+    if v is None and INVERT_FB:
+        v = _read_val_wao(255 - rg, ncc)   # 明背景＝数字が暗い区間を反転して読み直す（KV_FOUND_INVERT=1）
+    return v
+
+
+def _read_val_wao(rg, ncc=0.60):
     bx = boxes(rg, THR_WAO)
     if not bx:
         return None
@@ -135,6 +154,13 @@ GRAY = {"wao": gray_wao, "ai": gray_ai}
 
 
 def read_val_ai(rg, ncc=0.60):
+    v = _read_val_ai(rg, ncc)
+    if v is None and INVERT_FB:
+        v = _read_val_ai(255 - rg, ncc)
+    return v
+
+
+def _read_val_ai(rg, ncc=0.60):
     rg = roi_gain(rg)
     bx = boxes(rg, THR_AI, hmin=28, hmax=58, wmin=4, wmax=44, amin=60, junkmax=1200, gapmax=14)
     if not bx:

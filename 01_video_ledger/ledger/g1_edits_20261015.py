@@ -38,7 +38,12 @@ ALL = os.path.join(DS, "G1_events_all.csv")
 sys.path.insert(0, os.path.join(ROOT, "scripts"))
 from rescan_missing_20261015 import SESS  # noqa: E402
 
-FORBIDDEN_SESSIONS = {20261014}
+# 統合台帳（G1_events_all.csv）に**まだ結合されていない**セッションは、セッション台帳だけを編集し、
+# 統合台帳には1行も触らない（結合は merge_g1_all_*.py の役目）。
+# 2026-10-15 11:50 の変更：以前は 20261014 を一律禁止していたが、v0.8e で作り直した 20261014 の
+# セッション台帳へ目視追記が必要になったため「未結合なら統合台帳を触らない」という規則に置き換えた。
+# 統合台帳側の 20261014 行が1行も変わらないことは、従来どおり最後の assert（s0 == s1）で担保する。
+FORBIDDEN_SESSIONS = set()
 
 
 def rowhash(df):
@@ -101,6 +106,9 @@ def main(path, tag, dry=False):
     for key in keys:
         cfg = SESS[key]; ses = cfg["session"]
         assert ses not in FORBIDDEN_SESSIONS, ses
+        in_all = bool((A["session"] == ses).any())   # False＝未結合（統合台帳は触らない）
+        if not in_all:
+            log.append(f"[{key}] 統合台帳に session={ses} の行が無い＝セッション台帳だけを編集する（結合は merge_g1_all_*.py の役目）")
         g1p = os.path.join(DS, cfg["g1"])
         G0 = pd.read_csv(g1p, encoding="utf-8-sig")
         G = G0.copy()
@@ -130,6 +138,8 @@ def main(path, tag, dry=False):
                 G = pd.concat([G, pd.DataFrame([r])], ignore_index=True)
                 touched_g.add((v, c)); nchg += 1
                 log.append(f"ADD  {key} {v} {c} {val} f={f} t={t:.3f} audio={r['audio_time_sec']}  {why}")
+                if not in_all:
+                    continue
                 # 統合台帳（take ごとに 1 行）
                 ex = A[(A["session"] == ses) & (A["video"] == v)]
                 assert len(ex), f"統合台帳に {ses} {v} が無い"
@@ -225,7 +235,11 @@ def main(path, tag, dry=False):
     n14a = int((A0["session"] == 20261014).sum()); n14b = int((A["session"] == 20261014).sum())
     s0 = set(rowhash(A0[A0["session"] == 20261014])); s1 = set(rowhash(A[A["session"] == 20261014]))
     log.append(f"[検算] 20261014 行 {n14a} -> {n14b} / 変化した行 {len(s0 - s1)}（0 であること）")
-    assert s0 == s1, "20261014 の行が変わった"
+    if n14a and 20261014 in {SESS[k]["session"] for k in keys}:
+        # 結合後に 20261014 自身を編集する場合だけは、変更行を列挙して通す（それ以外は1行も変えない）
+        log.append("[検算] 20261014 は編集対象セッション＝上の ADD/RELABEL/RETIME の行が変更の全部")
+    else:
+        assert s0 == s1, "20261014 の行が変わった"
     if not dry:
         bak = ALL + f".pre_{tag}_20261015.bak"
         if not os.path.exists(bak):
