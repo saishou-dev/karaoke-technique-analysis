@@ -36,9 +36,15 @@ def crop_one(r):
                             "-c:v", "libx264", "-crf", "15", "-preset", "fast", "-an", out + ".part.mp4"],
                            capture_output=True, text=True, encoding="utf-8", errors="replace")
         if p.returncode != 0:
+            dt = time.time() - t0
             try: os.remove(out + ".part.mp4")
             except OSError: pass
-            return name, "err ffmpeg " + p.stderr[-200:].replace("\n", " ")
+            se = p.stderr[-200:].replace("\n", " ").strip()
+            # 2026-10-15 03:26 の教訓：Windows Update の計画再起動（TrustedInstaller の 1074）でセッションに
+            # シャットダウン通知が飛び、実行中の ffmpeg が stderr を一切残さず即死した（4本・rc だけが手掛かり）。
+            # rc と経過秒を必ず残す（rc/経過が無いと「ファイル名のせい」等の誤った切り分けに時間を取られる）。
+            if not se: se = "stderr空＝ffmpegが外部から強制終了された疑い（Windows Update の計画再起動・ログオフ・手動kill）。イベントログの 1074／6006 を確認"
+            return name, f"err ffmpeg rc={p.returncode} {dt:.0f}s {se}"
         os.replace(out + ".part.mp4", out); msg = f"ok {time.time()-t0:.0f}s"
     else:
         msg = "ok(existing)"

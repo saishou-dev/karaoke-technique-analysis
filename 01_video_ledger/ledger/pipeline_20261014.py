@@ -50,7 +50,29 @@ def launch_probe():
     C.log("PROBE launched: " + r.stdout.strip().replace("\n", " | ")[:300] + (" ERR " + r.stderr.strip()[:300] if r.stderr.strip() else ""))
 def want(step): return STEPS.index(a.frm) <= STEPS.index(step) <= STEPS.index(a.until)
 
+def preflight_reboot():
+    """無人で数時間走る前に『再起動保留』を記録する。
+    2026-10-15 03:26 の停止原因＝Windows Update（KB5126657）の計画再起動。TrustedInstaller がシャットダウンを開始し、
+    実行中の ffmpeg 3本＋直後に起動した1本が stderr を残さず即死（CROP err ffmpeg ×4）→ 帯クロップのゲートで停止。
+    再起動保留のまま長時間工程を始めると同じことが起きるので、保留を検知したら WARN をログに残す（判断は人／親Agent）。"""
+    pend = []
+    for k in (r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending",
+              r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired"):
+        try:
+            if subprocess.run(["reg", "query", k], capture_output=True, text=True).returncode == 0:
+                pend.append(k.rsplit("\\", 1)[-1])
+        except Exception:
+            pass
+    if pend:
+        C.log("PREFLIGHT WARN: 再起動保留あり（" + "／".join(pend) + "）→ Windows Update の計画再起動で工程が全滅する恐れ"
+              "（2026-10-15 03:26 の実例）。先に再起動してから --from <step> で再開するのが安全")
+    else:
+        C.log("PREFLIGHT ok 再起動保留なし")
+    return pend
+
+
 C.log(f"PIPELINE(wao) start session={S} pid={os.getpid()} from={a.frm} until={a.until}")
+preflight_reboot()
 sp = os.path.join(C.pipe_dir, "PIPELINE_STOPPED.txt")
 if os.path.exists(sp): os.replace(sp, sp + f".{datetime.datetime.now():%H%M%S}.old")
 targets = C.videos(); n_videos = len(targets)
