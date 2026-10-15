@@ -27,6 +27,9 @@
 
 時刻はフレーム番号ではなく pts（提示時刻）で持つ。録画と録音は相互相関の offset 1 本で結ぶ。工程の受け渡しはすべて CSV と npz。
 
+「01 回収・台帳」のカウンター読取器について＝本体は `01_video_ledger/read/read_counters.py`（v0.8・194 行）で、`read_counters_wao.py`（v0.8d）・`read_counters_wao_v08e_20261015.py`（v0.8e）・`read_counters_wao_v09_20261015.py` はこの本体を文字列置換で改変して実行する薄い皮（本体が無いと動かない）。
+通して読む用に、本体＋v0.8d＋v0.8e を置換の仕掛けなしで 1 本に書き下ろした `01_video_ledger/read/read_counters_wao_single_20261015.py` を置いている（出力は v0.8e と md5 一致・関数は `glyph_boxes` → `norm_glyph` → `classify` → `detect_increments` の順に読む）。
+
 ## フォルダ構成
 
 | フォルダ | 中身（各フォルダ直下＝その系列の最新版） |
