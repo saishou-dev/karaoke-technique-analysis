@@ -14,9 +14,13 @@
 | `identity_check.py` | 参照実装が正本 v0.8e と同じ答えを出すことを1曲の全コマ走査で実測 |
 | `extract_rois.py` | 対象曲の帯動画から等間隔でコマを採り、6つの関心領域を保存＋正解値表を作る（入力を1回だけ作る） |
 | `run_candidates.py` | 候補を1つ指定して同じ入力を読ませ、予測と処理時間を書き出す |
-| `run_all.sh` | 9候補を3レーンに分けて専用4コアで走らせる（処理時間を同条件で測るため） |
-| `score_compare.py` | 予測を同じ尺度で採点して比較表（compare_table.csv・per_counter.csv）を作る |
+| `run_all.sh` | 候補を3レーンに分けて専用4コアで走らせる（処理時間を同条件で測るため） |
+| `run_shard.sh` | 1候補を分割実行する（壁時計を縮めるため・1プロセスは専用4コアのまま） |
+| `merge_shards.py` | 分割実行した予測と処理時間を1つにまとめる |
+| `tess_timing.py` | Tesseract の処理時間を「落ちない一括実行」と「1枚ずつ」で測り直す補足測定 |
+| `score_compare.py` | 予測を同じ尺度で採点して比較表（compare_table.csv・per_counter.csv・finals.csv）を作る |
 | `make_figure.py` | 比較表から図1枚（PNG）を作る |
+| `watchdog_lanes.sh` | WSL 内で走るジョブの番犬（CPU時間が増えなければ停止して受信箱へ記録） |
 | `setup_env.sh` | 既製OCR の導入（sudo を使わない・ダイアログを出さない手順） |
 
 ## 再現手順
@@ -34,10 +38,18 @@ source ~/ocr_compare_20261018/env.sh
 ~/ocr_compare_20261018/.venv312/bin/python extract_rois.py \
     --out /mnt/g/研究アーカイブ/成果物/動画解析/ocr_compare_20261018/work --stride 8
 
-# 3) 9候補を走らせる（3レーン並行・各レーン専用4コア）
+# 3) 候補を走らせる（3レーン並行・各レーン専用4コア）
 bash run_all.sh A &   # PaddleOCR
 bash run_all.sh B &   # EasyOCR 3種
 bash run_all.sh C &   # 現行NCC・対照・Tesseract 3種
+#   重い候補は分割して壁時計を縮める（1プロセスは専用4コアのままなので処理時間の比較は保たれる）
+#     bash run_shard.sh paddle_rec 0 4 0-3 &  … 0〜3 の4分割
+#     python merge_shards.py --pred .../pred --cand paddle_rec --nshards 4
+#   PaddleOCR の一式は重いので間引いて実行する（採点側がその部分集合だけで集計する）
+#     bash run_shard.sh paddle_full 0 11 8-11
+#     cp pred_paddle_full.shard0of11.csv pred_paddle_full.csv（time_ も同様）
+#   長時間になるので番犬を同時に分離起動する
+#     setsid nohup bash watchdog_lanes.sh 10 > /dev/null 2>&1 &
 
 # 4) 採点して比較表を作る
 ~/ocr_compare_20261018/.venv312/bin/python score_compare.py \
