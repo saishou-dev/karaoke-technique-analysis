@@ -155,6 +155,7 @@ def scan(cfg, name, cs, lo, nccmin, roi):
     cur = {c: "INIT" for c in cs}
     n = {c: 0 for c in cs}
     lastbox = {c: -1 for c in cs}
+    lastval = {c: {} for c in cs}   # value -> その値が最後に読めたフレーム
     start = min(lo.values())
     f = -1
     while True:
@@ -175,6 +176,8 @@ def scan(cfg, name, cs, lo, nccmin, roi):
             if has_box(sub, rdr):
                 lastbox[c] = f
             v = read_val(sub, nccmin, rdr)
+            if v is not None:
+                lastval[c][v] = f
             if v == cur[c]:
                 n[c] += 1
             else:
@@ -186,7 +189,7 @@ def scan(cfg, name, cs, lo, nccmin, roi):
         if cur[c] != "INIT":
             runs[c].append((f + 1 - n[c], n[c], cur[c]))
     cap.release()
-    return runs, lastbox, f
+    return runs, lastbox, lastval, f
 
 
 def candidates(runs_c, value, RUN):
@@ -249,7 +252,7 @@ def run(key, nccmin=0.60, RUN=3, nev=3, targets=None, gap2=MIN_GAP2):
         for c in cs:
             evs = [e for e in ce if e["counter"] == c and int(e["delta"]) > 0]
             lo[c] = int(evs[-1]["frame"]) if evs else 0
-        runs, lastbox, nframe = scan(cfg, name, cs, lo, nccmin, roi)
+        runs, lastbox, lastval, nframe = scan(cfg, name, cs, lo, nccmin, roi)
         # ---- 候補表（全件・曲末側から）
         picked = collections.defaultdict(set)   # counter -> 画像を作るフレーム
         for c in cs:
@@ -274,9 +277,17 @@ def run(key, nccmin=0.60, RUN=3, nev=3, targets=None, gap2=MIN_GAP2):
                                     note=f"seq ncc{nccmin} run>={RUN} gap2={MIN_GAP2} 候補0件＝tail 画像で曲末まで目視すること"))
                 print(f"{name[:26]:28s} {c:10s} v={value:3d} from f{lo[c]} 候補{len(cands)}件 "
                       f"曲末側={[d['event_frame'] for d in cands[:5]]} last_box=f{lastbox[c]}", flush=True)
-            # 曲末の帯状写真は候補の有無によらず必ず作る
+            # 曲末の帯状写真は候補の有無によらず必ず作る（2種類）
+            #  (a) tail      ＝ 数字の枠が最後に見つかったフレームまで
+            #  (b) tail_prev ＝ **直前の値が最後に読めたフレームの前後**。帯が薄れて読めなくなった直後に
+            #      加点が出る型（2026-10-20 実測＝かくれんぼ 9/11 fall は f16488 で 0→1・帯は f16491 で消える）は
+            #      (a) だけでは窓の外に出るので、こちらが本命。
             if lastbox[c] >= 0:
                 picked[c] |= set(range(max(0, lastbox[c] - (TAIL_N - 1) * TAIL_STEP), lastbox[c] + 1, TAIL_STEP))
+            for value in sorted(need[name][c]):
+                a = lastval[c].get(value - 1)
+                if a is not None:
+                    picked[c] |= set(range(max(0, a - 10), a + 21))
         # ---- pass2＝画像
         wanted = {c: {f for f in fr if 0 <= f <= nframe} for c, fr in picked.items() if fr}
         if wanted:
@@ -297,6 +308,15 @@ def run(key, nccmin=0.60, RUN=3, nev=3, targets=None, gap2=MIN_GAP2):
                         m = stack([tile(got[c][f], f"f{f}") for f in fr],
                                   f"{name[:30]} {c} 表示領域の末尾 f{fr[0]}-f{fr[-1]}（枠の最後＝f{lastbox[c]} / 全{nframe+1}f）")
                         imwrite(os.path.join(evd, f"tail_{name}_{c}_f{fr[0]}-{fr[-1]}.png"), m)
+                for value in sorted(need[name][c]):
+                    a = lastval[c].get(value - 1)
+                    if a is None:
+                        continue
+                    fr = sorted(f for f in got[c] if a - 10 <= f <= a + 20)
+                    if fr:
+                        m = stack([tile(got[c][f], f"f{f}" + ("*" if f == a else "")) for f in fr],
+                                  f"{name[:30]} {c} value={value} 直前の値{value-1}が最後に読めた f{a} の前後（ここで増えていないか必ず見る）")
+                        imwrite(os.path.join(evd, f"tailprev_{name}_{c}_{value}_f{fr[0]}-{fr[-1]}.png"), m)
     out.sort(key=lambda r: (r["video"], r["counter"], r["value"], r["rank_from_end"]))
     p = os.path.join(outdir, "found_exact_all.csv")
     with open(p, "w", newline="", encoding="utf-8-sig") as fh:
