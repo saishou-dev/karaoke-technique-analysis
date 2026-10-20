@@ -17,6 +17,20 @@
   * first_read_pts ... その最初に読めたフレームの pts_sec（帯の演出で数秒読めないことがあるため別に持つ）。
 G1 の列は変えない（台帳の正本は G1 のまま・この表は別表）。
 
+2026-10-20 追加（本人○・④-2）＝「帯の表示が消えたフレーム」の列
+  last_frame_pts は**帯動画 pts 表の末尾**であって、帯の表示が消えた時刻ではない。帯が曲の途中で消える曲
+  （10/14 Habit・怪獣の花唄 など）では、曲の終盤が「観測できた区間」に入ったままになる。
+  そこで band_gone_20261020.py で曲ごとに帯の消失を測り、その結果表
+  dataset/song_band_gone_20261020.csv を **video で左結合**して次の列を足す（既存列は 1 つも変えない）。
+    band_first_frame / band_first_pts ... 帯が最初に映ったフレームと時刻
+    band_last_frame  / band_last_pts   ... **帯が最後に映っていた**フレームと時刻
+    band_gone_frame  / band_gone_pts   ... **帯の表示が消えた**（最初の）フレームと時刻。最後まで映っていれば空
+    band_tail_frames ... 帯が消えてから帯動画の末尾までのフレーム数（0＝最後まで映っている）
+    band_thr / band_src ... 判定に使ったしきい値と帯動画のファイル名
+  測り方・しきい値の根拠＝band_gone_20261020.py の冒頭と research/動画解析_作業ログ.md（2026-10-20）。
+  評価側の既定は**変えない**＝clip_span(mode="exclude") は従来どおり last_frame_pts を使う。
+  帯の消失まで狭めるのは新しい mode="exclude_band"（build_ledgers_20261008.py の --valid_range exclude_band）。
+
 使い方
   python song_valid_range_20261015.py            # 表を作り直す（dataset/song_valid_range.csv）
   python song_valid_range_20261015.py --check     # 作らずに内訳だけ出す
@@ -28,6 +42,9 @@ ROOT = r"G:\研究アーカイブ\成果物\動画解析"
 DS = os.path.join(ROOT, "dataset")
 OUT = os.path.join(DS, "song_valid_range.csv")
 ALL = os.path.join(DS, "G1_events_all.csv")
+BANDGONE = os.path.join(DS, "song_band_gone_20261020.csv")   # band_gone_20261020.py の結果（2026-10-20 追加）
+BAND_COLS = ["band_first_frame", "band_first_pts", "band_last_frame", "band_last_pts",
+             "band_gone_frame", "band_gone_pts", "band_tail_frames", "band_thr", "band_src"]
 
 WAO_COUNTERS = ["shakuri", "kobushi", "fall", "vibrato", "accent", "hammering"]
 AI_COUNTERS = ["shakuri", "kobushi", "fall", "vibrato"]
@@ -128,6 +145,21 @@ def build(check=False):
                          pre_record_counts=";".join(f"{c}={pre[c]}" for c in counters if c in pre),
                          note="／".join(note), pre_record_total=tot, first_read_pts=fread,
                          n_frames=nfr, src=(rd or "") + "|" + (pd_ or "")))
+    # 帯の消失（2026-10-20 追加）。表が無ければ列は空のまま＝既存の挙動と同じ。
+    bg = {}
+    if os.path.exists(BANDGONE):
+        for r in csv.DictReader(open(BANDGONE, encoding="utf-8-sig")):
+            bg[r["video"]] = r
+    n_bg = 0
+    for r in rows:
+        g = bg.get(r["video"])
+        for c in BAND_COLS:
+            r[c] = (g.get(c, "") if g else "")
+        if g:
+            n_bg += 1
+    print(f"帯の消失を入れた曲 {n_bg}/{len(rows)}（表 {os.path.basename(BANDGONE)}）")
+    n_gone = sum(1 for r in rows if r.get("band_gone_frame"))
+    print(f"  うち帯が帯動画の末尾より前に消えた曲 {n_gone}")
     rows.sort(key=lambda r: (r["session"], r["video"]))
     print(f"曲 {len(rows)}（{len(set(r['session'] for r in rows))} セッション）")
     agg = collections.defaultdict(lambda: [0, 0])
@@ -143,7 +175,7 @@ def build(check=False):
     if check:
         return rows
     cols = ["session", "machine", "video", "first_frame_pts", "last_frame_pts", "pre_record_counts", "note",
-            "pre_record_total", "first_read_pts", "n_frames", "src"]
+            "pre_record_total", "first_read_pts", "n_frames", "src"] + BAND_COLS
     with open(OUT, "w", newline="", encoding="utf-8-sig") as f:
         w = csv.DictWriter(f, fieldnames=cols); w.writeheader(); w.writerows(rows)
     print("WROTE", OUT, len(rows))
@@ -167,14 +199,19 @@ def load(path=OUT):
 
 def clip_span(video, span, offset=0.0, mode="exclude", path=OUT):
     """評価区間 span=[lo,hi]（録音WAV時刻）を、観測できた区間と重ねて狭める。
-       mode="keep" なら何もしない。帯 pts は帯動画の時刻なので + offset で WAV 時刻にする。"""
-    if mode != "exclude":
+       mode="keep"         ... 何もしない（従来）
+       mode="exclude"      ... 帯動画 pts 表の先頭〜末尾で狭める（**既定・2026-10-15 からの挙動を変えない**）
+       mode="exclude_band" ... さらに「帯が最後に映っていたフレーム」で終端を切る（2026-10-20 追加・既定ではない）
+       帯 pts は帯動画の時刻なので + offset で WAV 時刻にする。"""
+    if mode not in ("exclude", "exclude_band"):
         return span, False
     r = load(path).get(video)
     if not r or r["first_frame_pts"] == "":
         return span, False
     lo = max(float(span[0]), float(r["first_frame_pts"]) + offset)
     hi = min(float(span[1]), float(r["last_frame_pts"]) + offset)
+    if mode == "exclude_band" and r.get("band_last_pts"):
+        hi = min(hi, float(r["band_last_pts"]) + offset)
     return [lo, hi], (lo != float(span[0]) or hi != float(span[1]))
 
 
