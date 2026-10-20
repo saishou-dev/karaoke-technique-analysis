@@ -11,12 +11,14 @@
   同じ index.json** を出す（md5 一致を 2026-10-20 に実測）。そのために 10/6 は従来どおり
   「基本セッションを全部並べた後ろに追加する」順序・規則（audio_time_sec をそのまま使う・machine 列を付ける）で
   書いている。
-  10/14 は**既定では入れない**。索引に入れる曲を増やすのは評価の入力そのものを変えること（型を変える改善）で、
-  旧挙動と md5 が変わる。入れるときは `--extra 20261006,20261014` と明示する＝本人○待ち。
+  **2026-10-20 午後（本人○）＝10/14 も既定に入れた**（208 エントリ 10,200 件・md5 6c9dc6fc…）。
+  10/14 の pYIN（`dataset/pitch_pyin_20261014/`）を同日に作成済み＝30 曲とも pitch あり。
+  dev＝9/11・test＝9/24 の割当は変えない＝10/14 は**学習側のみ**。
+  10/20 午前までの既定（10/6 だけ・178 エントリ・md5 25372e40…）に戻すには `--extra 20261006`。
 
 使い方:
-  python build_index.py                              # 従来どおり（基本セッション ＋ 10/6）
-  python build_index.py --extra 20261006,20261014    # 10/14 も入れる（index.json の md5 は変わる）
+  python build_index.py                              # 既定（基本セッション ＋ 10/6 ＋ 10/14・208 エントリ）
+  python build_index.py --extra 20261006             # 10/20 午前までの既定（178 エントリ・従来の2本流しと md5 一致）
   python build_index.py --extra ""                   # 基本セッションだけ（2026-10-20 改訂前の build_index.py 相当）
   python build_index.py --out <path>                 # 書き出し先を変える（既定 g3v2_20260928/index.json）
 """
@@ -33,7 +35,7 @@ EXTRA = {
     "20261014": dict(pitch="pitch_pyin_20261014", machine="wao"),
 }
 ap = argparse.ArgumentParser()
-ap.add_argument("--extra", default="20261006", help="後ろに足すセッション（カンマ区切り・既定 20261006＝従来の 2 本流しと同じ出力）")
+ap.add_argument("--extra", default="20261006,20261014", help="後ろに足すセッション（カンマ区切り・既定 20261006,20261014＝2026-10-20 午後に本人○で 10/14 を追加。20261006 だけにすると従来の 2 本流しと同じ出力）")
 ap.add_argument("--out", default=f"{OUT}/index.json")
 a = ap.parse_args()
 EXTRA_SES = [s for s in a.extra.split(",") if s.strip()]

@@ -28,8 +28,13 @@ G1 の列は変えない（台帳の正本は G1 のまま・この表は別表�
     band_tail_frames ... 帯が消えてから帯動画の末尾までのフレーム数（0＝最後まで映っている）
     band_thr / band_src ... 判定に使ったしきい値と帯動画のファイル名
   測り方・しきい値の根拠＝band_gone_20261020.py の冒頭と research/動画解析_作業ログ.md（2026-10-20）。
-  評価側の既定は**変えない**＝clip_span(mode="exclude") は従来どおり last_frame_pts を使う。
-  帯の消失まで狭めるのは新しい mode="exclude_band"（build_ledgers_20261008.py の --valid_range exclude_band）。
+  mode="exclude" は従来どおり last_frame_pts までで、帯の消失では切らない。
+  帯の消失まで狭めるのは mode="exclude_band"（build_ledgers_20261008.py の --valid_range exclude_band）。
+
+2026-10-20 午後（本人○・評価の既定を切替）
+  **評価の既定を exclude → exclude_band に変えた**（build_ledgers_20261008.py・eval_counts.py・eval_raw.py・clip_span）。
+  band_last_pts が空の曲（帯の消失を測れていない 8/07 の 18 曲など）は終端を切らない＝exclude と同じ結果に自動で戻る。
+  自己テスト＝selftest_clip_span_20261020.py（5 項目）。test 9/24 の F値 は切替の前後で 0.19907 のまま（実測）。
 
 使い方
   python song_valid_range_20261015.py            # 表を作り直す（dataset/song_valid_range.csv）
@@ -197,11 +202,14 @@ def load(path=OUT):
     return _CACHE
 
 
-def clip_span(video, span, offset=0.0, mode="exclude", path=OUT):
+def clip_span(video, span, offset=0.0, mode="exclude_band", path=OUT):
     """評価区間 span=[lo,hi]（録音WAV時刻）を、観測できた区間と重ねて狭める。
-       mode="keep"         ... 何もしない（従来）
-       mode="exclude"      ... 帯動画 pts 表の先頭〜末尾で狭める（**既定・2026-10-15 からの挙動を変えない**）
-       mode="exclude_band" ... さらに「帯が最後に映っていたフレーム」で終端を切る（2026-10-20 追加・既定ではない）
+       mode="keep"         ... 何もしない（2026-10-15 以前）
+       mode="exclude"      ... 帯動画 pts 表の先頭〜末尾で狭める（2026-10-15〜10-20 の既定）
+       mode="exclude_band" ... さらに「帯が最後に映っていたフレーム」band_last_pts で終端を切る
+                               （**2026-10-20 から既定**・本人○）。
+       フォールバック＝band_last_pts が空（帯の消失を測れていない曲＝8/07 の 18 曲など）のときは
+       終端を切らない＝mode="exclude" と**同じ結果**になる。表に行が無い曲は span をそのまま返す。
        帯 pts は帯動画の時刻なので + offset で WAV 時刻にする。"""
     if mode not in ("exclude", "exclude_band"):
         return span, False

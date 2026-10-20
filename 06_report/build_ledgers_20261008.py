@@ -23,9 +23,10 @@ ap = argparse.ArgumentParser()
 ap.add_argument("--tags", default="v2d,v2d2,v2e"); ap.add_argument("--lag", type=float, default=0.3); ap.add_argument("--tol", type=float, default=1.0)
 ap.add_argument("--test", default="20260924"); ap.add_argument("--dev", default="20260911"); ap.add_argument("--hid", type=int, default=128); ap.add_argument("--threads", type=int, default=8)
 ap.add_argument("--skip_a", action="store_true"); ap.add_argument("--skip_b", action="store_true")
-ap.add_argument("--valid_range", default="exclude", choices=["exclude", "keep", "exclude_band"],
-                help="exclude（既定・意味は 2026-10-15 から不変）＝観測できた区間（dataset/song_valid_range.csv の first_frame_pts〜last_frame_pts）の外にある正解・予測を評価から除く／"
-                     "keep＝従来（区間で狭めない）／exclude_band＝さらに「帯が最後に映っていたフレーム」band_last_pts で終端を切る（2026-10-20 追加・既定ではない＝本人○待ち）")
+ap.add_argument("--valid_range", default="exclude_band", choices=["exclude", "keep", "exclude_band"],
+                help="exclude_band（**2026-10-20 から既定**）＝観測できた区間（dataset/song_valid_range.csv の first_frame_pts〜last_frame_pts）で狭めたうえ、"
+                     "さらに「帯が最後に映っていたフレーム」band_last_pts で終端を切る。band_last_pts が空の曲（8/07 の 18 曲など）は exclude と同じ挙動へ自動で戻る／"
+                     "exclude（2026-10-15〜10-20 の旧既定）＝帯の消失では切らない／keep＝区間で狭めない（2026-10-15 以前）")
 ap.add_argument("--suffix", default="", help="出力ファイル名の末尾に付ける文字（例 _keep）。既定＝空＝従来のファイル名（2026-10-15 追加）")
 ap.add_argument("--prob_cache", default="", help="CRNN の出力確率を .npy で保存／再利用するディレクトリ。同じ tags・lag・hid なら予測は入力だけで決まるので、valid_range を変えた再計算で推論をやり直さずに済む（2026-10-15 追加）")
 a = ap.parse_args(); TAGS = a.tags.split(",")
@@ -150,7 +151,7 @@ def build_a():
     # md
     L = [f"# 検出照合 集計（test {a.test}・{len(test)}曲）", "",
          f"- 予測＝学習済みCRNNアンサンブル {'+'.join(TAGS)}（確率平均・lag +{a.lag}s）。しきい値・最短間隔＝dev {a.dev} で技法別に F1(±1s) 最大（{os.path.basename(thr_file)}）。新しい学習なし。",
-         f"- 照合＝予測と正解（G1・録音WAV時刻）の ±{a.tol}s 一致・貪欲1対1（render_pitchbar.py と同規則）。採点区間（span）内のみ。--valid_range={a.valid_range}（exclude＝span を観測できた区間 dataset/song_valid_range.csv と重ねて狭める／keep＝従来）。",
+         f"- 照合＝予測と正解（G1・録音WAV時刻）の ±{a.tol}s 一致・貪欲1対1（render_pitchbar.py と同規則）。採点区間（span）内のみ。--valid_range={a.valid_range}（exclude_band＝既定・span を観測できた区間 dataset/song_valid_range.csv と重ね、さらに帯が最後に映っていた時刻 band_last_pts で終端を切る。帯の列が空の曲は exclude と同じ／exclude＝帯の消失では切らない／keep＝区間で狭めない）。",
          "- TP＝一致（予測が正解と一致）／FP＝誤検知（予測だけ）／FN＝見逃し（正解だけ）。適合率=TP/(TP+FP)・再現率=TP/(TP+FN)。",
          f"- しきい値(thr, 最短間隔s)＝{ {JA[c]: best[c] for c in TYPES} }", "",
          "## 技法別（28曲合計）", "", "| 技法 | 正解 | 予測 | TP | FP | FN | 適合率 | 再現率 | F1 |", "|---|---|---|---|---|---|---|---|---|"]

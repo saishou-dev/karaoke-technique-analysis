@@ -41,6 +41,10 @@ if __name__=="__main__":
     sy=pd.read_csv(f"{ROOT}/dataset/G1_events_synced.csv",encoding="utf-8-sig"); smap=dict(zip(sy["video"],sy["pitch_file"]))
     jobs=[(d,pitch_for(d,smap)) for d in index]
     print("no pitch file ->",[d["video"] for d,pf in jobs if not pf],flush=True)
-    with ProcessPoolExecutor(14) as ex:
+    # 並列数は環境変数 KV_FEAT_WORKERS で変えられる（既定 14＝従来どおり）。2026-10-20 追加＝
+    # 外付け HDD を読む工程は 3〜4 並列が上限という運用（作業ログ 10/20 の摩擦1件）に合わせるため。
+    nw = int(os.environ.get("KV_FEAT_WORKERS", "14"))
+    print("workers", nw, flush=True)
+    with ProcessPoolExecutor(nw) as ex:
         for v,msg in ex.map(work,jobs): print(v,msg,flush=True)
     print("DONE",flush=True)

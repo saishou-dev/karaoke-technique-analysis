@@ -9,7 +9,7 @@ from song_valid_range_20261015 import clip_span  # 観測できた区間（2026-
 
 ROOT = "G:/研究アーカイブ/成果物/動画解析/g3v2_20260928"
 TYPES = ["shakuri", "kobushi", "vibrato", "fall", "accent", "hammering"]
-ap = argparse.ArgumentParser(); ap.add_argument("--tag", required=True); ap.add_argument("--lag", type=float, default=0.30); ap.add_argument("--split", default="test"); ap.add_argument("--valid_range", default="exclude", choices=["exclude", "keep"])
+ap = argparse.ArgumentParser(); ap.add_argument("--tag", required=True); ap.add_argument("--lag", type=float, default=0.30); ap.add_argument("--split", default="test"); ap.add_argument("--valid_range", default="exclude_band", choices=["exclude", "keep", "exclude_band"])  # 2026-10-20 既定を exclude_band へ（build_ledgers_20261008.py と揃える。帯の列が空の曲は exclude と同じ挙動へ自動で戻る）
 a = ap.parse_args()
 index = {d["video"]: d for d in json.load(open(f"{ROOT}/index.json", encoding="utf-8"))}
 pred = collections.defaultdict(list)
