@@ -83,13 +83,37 @@ SESSION_OVERRIDES = {                # 録画品質に合わせたセッショ�
     20260812: dict(NCC_MIN_RED=0.3, GATE_FACTOR=0.6, SAT_MIN=70),   # ぼやけ＋低彩度：真の ʃ でも相関 0.36・赤が S<120
 }
 
-TPL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
+def _resolve_tpl_dir():
+    """見本画像（印のアイコン）の置き場を探す。
+
+    見本は録画の切り出しなので公開リポジトリには置かない（データは同期しない運用）。
+    そのため、リポジトリから実行したときは **スクリプトの隣に templates/ が無い**。
+    探索順＝①環境変数 KV_MARK_TPL_DIR ②スクリプトの隣 ③出力先の scripts/templates（データ側の正本）。
+    2026-10-23＝①②が無いまま 10/14 の 27 曲を流し、赤ファミリ（しゃくり・アクセント）が
+    ncc=-1 で全却下（0/570 件）になった。silent に落ちないよう欠落は例外にする。
+    """
+    cands = [os.environ.get("KV_MARK_TPL_DIR", ""),
+             os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates"),
+             os.path.join(OUT_DIR, "scripts", "templates")]
+    for c in cands:
+        if c and os.path.isdir(c) and os.path.exists(os.path.join(c, "shakuri_color.png")):
+            return c
+    return cands[1]
+
+
+TPL_DIR = _resolve_tpl_dir()
 TEMPLATES = {}   # fam → [(kind, gray_template, mask)]
 TEMPLATE_SCALE = 1.0   # configure() で設定（セッションの画面スケール / 0.934）
 def load_templates():
     global TEMPLATES
     if TEMPLATES: return TEMPLATES
     spec = {"shakuri": B_RED, "accent": B_RED, "vibrato": B_GREEN, "kobushi": B_BLUE, "hammering": B_BLUE}
+    missing = [k for k in spec if not os.path.exists(os.path.join(TPL_DIR, f"{k}_color.png"))]
+    if missing:
+        raise RuntimeError(
+            f"見本画像が見つからない（{TPL_DIR}・不足={missing}）。"
+            "赤ファミリ（しゃくり・アクセント）は見本照合で門前払いするため、"
+            "見本が無いと 0 件になる。KV_MARK_TPL_DIR で置き場を指定すること。")
     for kind, fam in spec.items():
         fp = os.path.join(TPL_DIR, f"{kind}_color.png")
         if os.path.exists(fp):
