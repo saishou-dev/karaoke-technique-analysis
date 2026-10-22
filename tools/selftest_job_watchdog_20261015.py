@@ -135,6 +135,30 @@ try:
     except Exception:
         pass
 
+    print("T7 番犬同士を対象にしない（コマンドラインに job_watchdog.py を含むプロセスは止めない）")
+    clear(inbox)
+    # おとり＝コマンドラインに MARK と job_watchdog.py の両方を含む「番犬のふり」をしたプロセス。
+    # 本物の番犬の --pattern 欄に他の番犬の名前が載っている状況を、そのまま模している（2026-10-23 05:48 の事故）。
+    decoy = subprocess.Popen([sys.executable, "-c", f"import time;_='{MARK} job_watchdog.py';time.sleep(900)"])
+    victim3 = subprocess.Popen([sys.executable, "-c", f"import time;_='{MARK}';time.sleep(900)"])
+    time.sleep(3)
+    job7 = dict(job); job7["boot"] = job["boot"]
+    job7["pids"] = {}                      # 記録ゼロ＝一度も見ていない状態（T6 と同じ経路で停止される）
+    job7["started"] = time.time() - 600
+    job7["idle"] = 0; job7["last_progress"] = time.time() - 3600
+    json.dump([job7], open(jobs, "w", encoding="utf-8"), ensure_ascii=False)
+    r = run_wd(["--once", "--jobs", jobs, "--inbox", inbox])
+    time.sleep(2)
+    check("番犬のふりをしたプロセスは止めない", alive(decoy.pid), "pid=%d" % decoy.pid)
+    check("ふつうの対象はこれまでどおり止める", not alive(victim3.pid), "pid=%d" % victim3.pid)
+    t = "\n".join(inbox_texts(inbox))
+    check("報告に番犬のふりをした PID が出ない", str(decoy.pid) not in t, t[:300].replace("\n", " / "))
+    for pr in (decoy, victim3):
+        try:
+            if pr.poll() is None: pr.kill()
+        except Exception:
+            pass
+
     print("T5 本物の台帳と受信箱に触れていない")
     real_jobs = os.path.join(HERE, "watchdog_jobs.json")
     check("本物の watchdog_jobs.json は読めるまま",

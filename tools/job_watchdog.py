@@ -41,7 +41,11 @@ def boot_time():
     return float(s) if s.lstrip("-").isdigit() else None
 def procs():
     """[(pid, 累積CPU分, プロセス名, 開始時刻Unix秒)]。開始時刻が取れない行は 0.0。"""
-    ps = ("Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match '" + a.pattern.replace("'", "''") + "' -and $_.ProcessId -ne " + str(os.getpid()) + " } | "
+    # 2026-10-23 追加（本人裁定）＝番犬は番犬を監視しない。
+    # 番犬のコマンドラインには --pattern の文字列がそのまま載る。そのため素直なパターン（例 train_crnn_refdiff）を書くと
+    # 別の番犬の --pattern 欄にも当たり、停滞と判定したときに無関係な番犬まで一緒に止めてしまう（10/23 05:48 に実害）。
+    # パターンの書き方で毎回避けるのは注意力に頼る運用なので、対象から job_watchdog.py を含むプロセスを外す。
+    ps = ("Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match '" + a.pattern.replace("'", "''") + "' -and $_.CommandLine -notmatch 'job_watchdog\\.py' -and $_.ProcessId -ne " + str(os.getpid()) + " } | "
           'ForEach-Object { "{0}`t{1}`t{2}`t{3}" -f $_.ProcessId, [math]::Round(($_.KernelModeTime + $_.UserModeTime)/1e7/60,3), $_.Name, '
           '[int64]([datetimeoffset]$_.CreationDate).ToUnixTimeSeconds() }')
     r = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True, encoding="utf-8", errors="replace")
