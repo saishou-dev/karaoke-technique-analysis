@@ -21,14 +21,24 @@ DAM 精密採点の曲単位の集計値（回数・合計秒・音域）と対�
   c3_consistency_stats.json  上記の素の値
   c3_consistency.md          表と数値の本文
 
-ビブラートの測定定義（vibrato_depth.py / c3_fullspan.py と同一・変更しない）:
+ビブラートの測定の枠組み（vibrato_depth.py / c3_fullspan.py と同一）:
   セント列 = F0 を MIDI 半音×100 に直し、有声区間ごとに 0.3 s の移動中央値（旋律の土台）を引いた残差。
   極値列   = 残差の山と谷を交互に取る。
-  連鎖     = 隣り合う山谷の差 >= 15 cent かつ 半周期 ∈ [1/18, 1/6] s（3〜9 Hz）を満たす最長の並びで、山谷対が 3 組以上。
+  連鎖     = 隣り合う山谷の差 >= dmin cent かつ 半周期 ∈ [1/(2*fmax), 1/(2*fmin)] s を満たす対が
+             min_pairs 組以上続く、途切れない最長の並び。
   1 連鎖の長さ = 最初の極値から最後の極値まで ＋ 半周期 1 つ（0.5/速さ）。
-  録音単位のビブラート合計秒 = 採点区間内の全連鎖の長さの和（長さの下限 0 / 0.6 / 1.0 s の 3 通り）。
+  録音単位のビブラート合計秒 = 採点区間内で長さが下限以上の全連鎖の長さの和。
+
+主系列の判定条件（2026-10-23 v1.2 で既定を切り替え）:
+  既定 = 山谷差 15 cent・3〜9 Hz・対 4 組以上・長さの下限 0 s
+         （格子探索 144 通り＝c3_vibrato_grid.csv で「比の中央値 0.9〜1.1 のうち r 最大」だった条件）
+  旧既定 = 山谷差 15 cent・3〜9 Hz・対 3 組以上・長さの下限 0.6 s
+         （列 vib_sec_ge06 等として残す。--vib-dmin 15 --vib-band 3,9 --vib-pairs 3 --vib-minlen 0.6 で主系列も戻せる）
+  音域の主系列 = 最高音は持続音の最高値・最低音は高信頼な持続音の最低値（パーセンタイル版は【旧】として残す）
 
 使い方: python c3_consistency_table.py [--sessions 20260924,20261014,20261021] [--out ...]
+        python c3_consistency_table.py --grid          # 判定条件の格子探索
+        python c3_consistency_table.py --range-probe    # 音域の切り分け（基準メロディ 対 歌唱）
 """
 import argparse, json, os, re, sys, unicodedata
 from pathlib import Path
@@ -54,6 +64,12 @@ DMIN = 15.0           # 山谷差の下限[cent]
 FMIN, FMAX = 3.0, 9.0
 HMIN, HMAX = 1.0 / (2 * FMAX), 1.0 / (2 * FMIN)
 SPAN_PAD = (-5.0, 2.0)  # index.json の span と同じ作り方（最初の加点−5 s 〜 最後の加点＋2 s）
+
+# 主系列のビブラート判定条件（2026-10-23 v1.2 で既定を切り替え）。
+# 既定 ＝ 格子探索 144 通り（c3_vibrato_grid.csv）で「比の中央値 0.9〜1.1 のうち r 最大」だった条件。
+# 旧既定（山谷差 15 cent・3〜9 Hz・対 3 組以上・長さの下限 0.6 s）は列 vib_sec_ge06 等として残す。
+# --vib-dmin / --vib-band / --vib-pairs / --vib-minlen で主系列を旧既定に戻せる。
+PRI = dict(dmin=15.0, fmin=3.0, fmax=9.0, pairs=4, minlen=0.0)
 
 COUNTERS = ["vibrato", "shakuri", "kobushi", "accent", "hammering", "fall"]
 DAM_COUNT = {"vibrato": "vibratoCount", "shakuri": "shakuriCount", "kobushi": "kobushiCount",
@@ -142,6 +158,28 @@ def chain_durs(ex, dmin, fmin, fmax, min_pairs):
             rate = 1.0 / (2 * float(np.median(dt[s:e])))
             durs.append(t[e] - t[s] + 0.5 / rate)
     return np.array(durs)
+
+
+def chains_param(ex, dmin, fmin, fmax, min_pairs):
+    """chain_durs と同じ連鎖を取り、1 本ごとの (長さ[s], 深さ[cent], 速さ[Hz]) を返す。"""
+    hmin, hmax = 1.0 / (2 * fmax), 1.0 / (2 * fmin)
+    durs, deps, rates = [], [], []
+    for (t, v) in ex:
+        if len(t) < min_pairs + 1:
+            continue
+        dv = np.abs(np.diff(v)); dt = np.diff(t)
+        ok = (dv >= dmin) & (dt >= hmin) & (dt <= hmax)
+        if not ok.any():
+            continue
+        idx = np.flatnonzero(np.diff(np.concatenate(([0], ok.view(np.int8), [0]))))
+        for s, e in zip(idx[0::2], idx[1::2]):
+            if e - s < min_pairs:
+                continue
+            rate = 1.0 / (2 * float(np.median(dt[s:e])))
+            durs.append(t[e] - t[s] + 0.5 / rate)
+            deps.append(float(np.median(dv[s:e])))
+            rates.append(rate)
+    return np.array(durs), np.array(deps), np.array(rates)
 
 
 # ---------------------------------------------------------------- ビブラート連鎖（定義は docstring 参照）
@@ -254,9 +292,20 @@ def measure(npz_path, span):
         d[f"vib_sec_full_{tag}"] = round(float(durf[mf].sum()), 1)
         d[f"vib_n_full_{tag}"] = int(mf.sum())
     m = dur >= 0.6
-    d["vib_depth_med"] = round(float(np.median(dep[m])), 1) if m.sum() else np.nan
-    d["vib_rate_med"] = round(float(np.median(rat[m])), 2) if m.sum() else np.nan
-    d["vib_len_med"] = round(float(np.median(dur[m])), 2) if m.sum() else np.nan
+    d["vib_depth_med_old"] = round(float(np.median(dep[m])), 1) if m.sum() else np.nan
+    d["vib_rate_med_old"] = round(float(np.median(rat[m])), 2) if m.sum() else np.nan
+    d["vib_len_med_old"] = round(float(np.median(dur[m])), 2) if m.sum() else np.nan
+    # ---- 主系列（2026-10-23 v1.2 で既定を切り替え。格子探索 c3_vibrato_grid.csv の最良条件）
+    ex = extrema_in(z, lo, hi)
+    pd_, pdep, prat = chains_param(ex, PRI["dmin"], PRI["fmin"], PRI["fmax"], PRI["pairs"])
+    mp = pd_ >= PRI["minlen"]
+    d["vib_sec"] = round(float(pd_[mp].sum()), 1); d["vib_n"] = int(mp.sum())
+    d["vib_depth_med"] = round(float(np.median(pdep[mp])), 1) if mp.sum() else np.nan
+    d["vib_rate_med"] = round(float(np.median(prat[mp])), 2) if mp.sum() else np.nan
+    d["vib_len_med"] = round(float(np.median(pd_[mp])), 2) if mp.sum() else np.nan
+    exf = extrema_in(z, t0, t0 + len(st) * hop)
+    fd_, _, _ = chains_param(exf, PRI["dmin"], PRI["fmin"], PRI["fmax"], PRI["pairs"])
+    d["vib_sec_full"] = round(float(fd_[fd_ >= PRI["minlen"]].sum()), 1)
     return d
 
 
@@ -524,11 +573,18 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--sessions", default="20260924,20261014,20261021")
     ap.add_argument("--out", default=str(BASE / "c3_consistency_20261023"))
+    ap.add_argument("--vib-dmin", type=float, default=PRI["dmin"], help="主系列の山谷差の下限[cent]（旧既定 15）")
+    ap.add_argument("--vib-band", default=f"{PRI['fmin']:g},{PRI['fmax']:g}", help="主系列の揺れの速さの範囲[Hz]（旧既定 3,9）")
+    ap.add_argument("--vib-pairs", type=int, default=PRI["pairs"], help="主系列の山谷の対の数の下限（旧既定 3）")
+    ap.add_argument("--vib-minlen", type=float, default=PRI["minlen"], help="主系列の 1 本の長さの下限[s]（旧既定 0.6）")
     ap.add_argument("--grid", action="store_true", help="ビブラートの判定条件を格子で振る（整合表は作り直さない）")
     ap.add_argument("--range-probe", action="store_true", help="DAM の音域と基準メロディ・歌唱の音域を並べる（整合表は作り直さない）")
     a = ap.parse_args()
     out = Path(a.out); out.mkdir(parents=True, exist_ok=True)
     sessions = [s for s in a.sessions.split(",") if s]
+    fl, fh = (float(x) for x in a.vib_band.split(","))
+    PRI.update(dmin=a.vib_dmin, fmin=fl, fmax=fh, pairs=a.vib_pairs, minlen=a.vib_minlen)
+    print(f"主系列の判定条件＝山谷差 {PRI['dmin']:g} cent・{PRI['fmin']:g}〜{PRI['fmax']:g} Hz・対 {PRI['pairs']} 組以上・長さの下限 {PRI['minlen']:g} s", flush=True)
     if a.grid or a.range_probe:
         rc = 0
         if a.grid:
@@ -583,38 +639,47 @@ def main():
                         row["sm_" + k] = float(hh[k]) if pd.notna(hh.get(k)) else np.nan
             rows.append(row)
     T = pd.DataFrame(rows).sort_values(["session", "play_date"]).reset_index(drop=True)
-    T.to_csv(out / "c3_consistency_songs.csv", index=False, encoding="utf-8-sig")
-
-    # ---- 項目の定義（DAM 列 ↔ 比べる列）
-    pairs = [("ビブラート合計秒（DAM）対 連鎖合計秒（測定・下限 0.6 s）", "dam_vibratoTotalSecond", "meas_vib_sec_ge06", "秒"),
-             ("ビブラート合計秒（DAM）対 連鎖合計秒（測定・下限なし）", "dam_vibratoTotalSecond", "meas_vib_sec_all", "秒"),
-             ("ビブラート合計秒（DAM）対 連鎖合計秒（測定・下限 1.0 s）", "dam_vibratoTotalSecond", "meas_vib_sec_ge10", "秒"),
-             ("ビブラート合計秒（DAM）対 連鎖合計秒（測定・録音全体・下限 0.6 s）", "dam_vibratoTotalSecond", "meas_vib_sec_full_ge06", "秒"),
-             ("ビブラート合計秒（DAM）対 連鎖合計秒（測定・録音全体・下限 1.0 s）", "dam_vibratoTotalSecond", "meas_vib_sec_full_ge10", "秒"),
-             ("ビブラート回数（DAM）対 連鎖本数（測定・下限 1.0 s）", "dam_vibrato_count", "meas_vib_n_ge10", "回"),
-             ("ビブラート回数（DAM）対 技法イベント件数（正解データ）", "dam_vibrato_count", "g1_vibrato_last", "回"),
-             ("最高音（DAM singingRangeHighest）対 F0 の 95 パーセンタイル（測定）", "dam_singingRangeHighest", "meas_pitch_p95", "MIDI 半音"),
-             ("最低音（DAM singingRangeLowest）対 F0 の 5 パーセンタイル（測定）", "dam_singingRangeLowest", "meas_pitch_p5", "MIDI 半音"),
-             ("最高音（DAM singingRangeHighest）対 F0 の最大値（測定）", "dam_singingRangeHighest", "meas_pitch_max", "MIDI 半音"),
-             ("最低音（DAM singingRangeLowest）対 F0 の最小値（測定）", "dam_singingRangeLowest", "meas_pitch_min", "MIDI 半音"),
-             ("最高音（DAM singingRangeHighest）対 持続音の最高値（測定）", "dam_singingRangeHighest", "meas_note_max", "MIDI 半音"),
-             ("最低音（DAM singingRangeLowest）対 持続音の最低値（測定）", "dam_singingRangeLowest", "meas_note_min", "MIDI 半音"),
-             ("最高音（DAM singingRangeHighest）対 持続音の 95 パーセンタイル（測定）", "dam_singingRangeHighest", "meas_note_p95", "MIDI 半音"),
-             ("最低音（DAM singingRangeLowest）対 持続音の 5 パーセンタイル（測定）", "dam_singingRangeLowest", "meas_note_p5", "MIDI 半音"),
-             ("最低音（DAM singingRangeLowest）対 高信頼な持続音の最低値（測定）", "dam_singingRangeLowest", "meas_note_hc_min", "MIDI 半音"),
-             ("最低音（DAM singingRangeLowest）対 高信頼な持続音の 5 パーセンタイル（測定）", "dam_singingRangeLowest", "meas_note_hc_p5", "MIDI 半音"),
-             ("最高音（DAM singingRangeHighest）対 高信頼な持続音の最高値（測定）", "dam_singingRangeHighest", "meas_note_hc_max", "MIDI 半音"),
-             ("最高音（DAM vocalRangeHighest）対 持続音の最高値（測定）", "dam_vocalRangeHighest", "meas_note_max", "MIDI 半音"),
-             ("最低音（DAM vocalRangeLowest）対 持続音の最低値（測定）", "dam_vocalRangeLowest", "meas_note_min", "MIDI 半音"),
-             ("音域の幅（DAM singingRange）対 F0 の 5〜95 パーセンタイル幅（測定）", "dam_range_width", "meas_pitch_width", "半音"),
-             ("音域の幅（DAM singingRange）対 持続音の最高−最低（測定）", "dam_range_width", "meas_note_width", "半音")]
-    for c in COUNTERS:
-        pairs.append((f"{JA[c]}の回数（DAM）対 技法イベントの最終値（正解データ）", f"dam_{c}_count", f"g1_{c}_last", "回"))
-        pairs.append((f"{JA[c]}の回数（DAM）対 技法イベントの行数（正解データ）", f"dam_{c}_count", f"g1_{c}_rows", "回"))
-    if len(T):
+    if len(T):   # 派生列（幅）も CSV に入れる
         T["dam_range_width"] = T["dam_singingRangeHighest"] - T["dam_singingRangeLowest"]
         T["meas_pitch_width"] = T["meas_pitch_p95"] - T["meas_pitch_p5"]
         T["meas_note_width"] = T["meas_note_max"] - T["meas_note_min"]
+        T["meas_note_width_pri"] = T["meas_note_max"] - T["meas_note_hc_min"]
+    T.to_csv(out / "c3_consistency_songs.csv", index=False, encoding="utf-8-sig")
+
+    # ---- 項目の定義（DAM 列 ↔ 比べる列）
+    PT = (f"山谷差 {PRI['dmin']:g} cent・{PRI['fmin']:g}〜{PRI['fmax']:g} Hz・対 {PRI['pairs']} 組以上・下限 {PRI['minlen']:g} s")
+    pairs = [(f"【主】ビブラート合計秒（DAM）対 連鎖合計秒（測定・{PT}）", "dam_vibratoTotalSecond", "meas_vib_sec", "秒"),
+             (f"【主】ビブラート回数（DAM）対 連鎖本数（測定・{PT}）", "dam_vibrato_count", "meas_vib_n", "回"),
+             ("【主】ビブラート回数（DAM）対 技法イベントの最終値（正解データ）", "dam_vibrato_count", "g1_vibrato_last", "回"),
+             ("【主】最高音（DAM singingRangeHighest）対 持続音の最高値（測定）", "dam_singingRangeHighest", "meas_note_max", "MIDI 半音"),
+             ("【主】最低音（DAM singingRangeLowest）対 高信頼な持続音の最低値（測定）", "dam_singingRangeLowest", "meas_note_hc_min", "MIDI 半音"),
+             ("【主】音域の幅（DAM singingRange）対 持続音の最高値−高信頼な持続音の最低値（測定）", "dam_range_width", "meas_note_width_pri", "半音"),
+             (f"ビブラート合計秒（DAM）対 連鎖合計秒（測定・録音全体・{PT}）", "dam_vibratoTotalSecond", "meas_vib_sec_full", "秒"),
+             ("【旧】ビブラート合計秒（DAM）対 連鎖合計秒（測定・下限 0.6 s）", "dam_vibratoTotalSecond", "meas_vib_sec_ge06", "秒"),
+             ("【旧】ビブラート合計秒（DAM）対 連鎖合計秒（測定・下限なし）", "dam_vibratoTotalSecond", "meas_vib_sec_all", "秒"),
+             ("【旧】ビブラート合計秒（DAM）対 連鎖合計秒（測定・下限 1.0 s）", "dam_vibratoTotalSecond", "meas_vib_sec_ge10", "秒"),
+             ("【旧】ビブラート合計秒（DAM）対 連鎖合計秒（測定・録音全体・下限 0.6 s）", "dam_vibratoTotalSecond", "meas_vib_sec_full_ge06", "秒"),
+             ("【旧】ビブラート合計秒（DAM）対 連鎖合計秒（測定・録音全体・下限 1.0 s）", "dam_vibratoTotalSecond", "meas_vib_sec_full_ge10", "秒"),
+             ("【旧】ビブラート回数（DAM）対 連鎖本数（測定・下限 1.0 s）", "dam_vibrato_count", "meas_vib_n_ge10", "回"),
+             ("【旧】ビブラート回数（DAM）対 技法イベント件数（正解データ）", "dam_vibrato_count", "g1_vibrato_last", "回"),
+             ("【旧】最高音（DAM singingRangeHighest）対 F0 の 95 パーセンタイル（測定）", "dam_singingRangeHighest", "meas_pitch_p95", "MIDI 半音"),
+             ("【旧】最低音（DAM singingRangeLowest）対 F0 の 5 パーセンタイル（測定）", "dam_singingRangeLowest", "meas_pitch_p5", "MIDI 半音"),
+             ("【旧】最高音（DAM singingRangeHighest）対 F0 の最大値（測定）", "dam_singingRangeHighest", "meas_pitch_max", "MIDI 半音"),
+             ("【旧】最低音（DAM singingRangeLowest）対 F0 の最小値（測定）", "dam_singingRangeLowest", "meas_pitch_min", "MIDI 半音"),
+             ("【旧】最高音（DAM singingRangeHighest）対 持続音の最高値（測定・主系列と同一）", "dam_singingRangeHighest", "meas_note_max", "MIDI 半音"),
+             ("【旧】最低音（DAM singingRangeLowest）対 持続音の最低値（測定）", "dam_singingRangeLowest", "meas_note_min", "MIDI 半音"),
+             ("【旧】最高音（DAM singingRangeHighest）対 持続音の 95 パーセンタイル（測定）", "dam_singingRangeHighest", "meas_note_p95", "MIDI 半音"),
+             ("【旧】最低音（DAM singingRangeLowest）対 持続音の 5 パーセンタイル（測定）", "dam_singingRangeLowest", "meas_note_p5", "MIDI 半音"),
+             ("【旧】最低音（DAM singingRangeLowest）対 高信頼な持続音の最低値（測定・主系列と同一）", "dam_singingRangeLowest", "meas_note_hc_min", "MIDI 半音"),
+             ("【旧】最低音（DAM singingRangeLowest）対 高信頼な持続音の 5 パーセンタイル（測定）", "dam_singingRangeLowest", "meas_note_hc_p5", "MIDI 半音"),
+             ("【旧】最高音（DAM singingRangeHighest）対 高信頼な持続音の最高値（測定）", "dam_singingRangeHighest", "meas_note_hc_max", "MIDI 半音"),
+             ("【旧】最高音（DAM vocalRangeHighest）対 持続音の最高値（測定）", "dam_vocalRangeHighest", "meas_note_max", "MIDI 半音"),
+             ("【旧】最低音（DAM vocalRangeLowest）対 持続音の最低値（測定）", "dam_vocalRangeLowest", "meas_note_min", "MIDI 半音"),
+             ("【旧】音域の幅（DAM singingRange）対 F0 の 5〜95 パーセンタイル幅（測定）", "dam_range_width", "meas_pitch_width", "半音"),
+             ("【旧】音域の幅（DAM singingRange）対 持続音の最高−最低（測定）", "dam_range_width", "meas_note_width", "半音")]
+    for c in COUNTERS:
+        pairs.append((f"{JA[c]}の回数（DAM）対 技法イベントの最終値（正解データ）", f"dam_{c}_count", f"g1_{c}_last", "回"))
+        pairs.append((f"{JA[c]}の回数（DAM）対 技法イベントの行数（正解データ）", f"dam_{c}_count", f"g1_{c}_rows", "回"))
     items = []
     for label, dc, mc, unit in pairs:
         if dc not in T.columns or mc not in T.columns:
@@ -658,7 +723,7 @@ def main():
                  f"{gp(it['spearman_p'])} | {g(it['median_diff'],2)} | {g(it['median_abs_diff'],2)} | {g(it['median_ratio'])} |")
     L += ["", "## セッション別（主要項目）", "",
           "| 項目 | 収録セッション | n | ピアソン r | スピアマン ρ | 差の中央値 | ±0.5 以内の割合 |", "|---|---|---|---|---|---|---|"]
-    PRIMARY = ("下限 0.6 s）", "持続音の最高値", "持続音の最低値", "高信頼な持続音の最低値", "技法イベントの最終値")
+    PRIMARY = ("【主】", "技法イベントの最終値")
     for it in items:
         if it["scope"] == "全体" or not any(k in it["item"] for k in PRIMARY):
             continue
@@ -670,9 +735,9 @@ def main():
             continue
         L.append(f"- {it['item']}：" + "／".join(f"{o['song']}（{o['session']}・DAM {o['dam']:g}・測定 {o['meas']:g}・差 {o['diff']:+g}）" for o in it["outliers"]))
     L += ["", "## 1 行 1 録音の表（主要列）", ""]
-    cols = ["session", "song", "dam_total_score", "dam_vibratoTotalSecond", "meas_vib_sec_ge06", "meas_vib_sec_all",
-            "dam_vibrato_count", "meas_vib_n_ge10", "g1_vibrato_last",
-            "dam_singingRangeHighest", "meas_pitch_p95", "dam_singingRangeLowest", "meas_pitch_p5",
+    cols = ["session", "song", "dam_total_score", "dam_vibratoTotalSecond", "meas_vib_sec", "meas_vib_sec_ge06",
+            "dam_vibrato_count", "meas_vib_n", "g1_vibrato_last",
+            "dam_singingRangeHighest", "meas_note_max", "dam_singingRangeLowest", "meas_note_hc_min",
             "meas_voiced_ratio", "meas_vib_depth_med", "meas_vib_rate_med"]
     cols = [c for c in cols if c in T.columns]
     L.append("| " + " | ".join(cols) + " |")
