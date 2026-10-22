@@ -89,10 +89,14 @@ def build(d, force=False):
     row["n_frames"] = int(T)
     if os.path.exists(out) and not force:
         zz = np.load(out)
-        rv = zz["refvalid"]
+        rv = zz["refvalid"]          # お手本があり、かつ声が出ているフレーム
         vo = zz["voiced"]
-        row.update(status="既にあり", ref_frac=round(float(rv.mean()), 3), voiced_frac=round(float(vo.mean()), 3),
-                   both_frac=round(float(((rv > 0) & (vo > 0)).mean()), 3))
+        rm = zz["ref_midi"]
+        refok = (rm > 0)             # お手本だけが読めているフレーム（ref_midi は 0 を取らないので 0 が「無し」の印）
+        m = zz["refdiff_cent"][rv > 0]
+        row.update(status="既にあり", ref_frac=round(float(refok.mean()), 3), voiced_frac=round(float(vo.mean()), 3),
+                   both_frac=round(float((rv > 0).mean()), 3),
+                   med_abs_diff_cent=(round(float(np.median(np.abs(m))), 1) if len(m) else ""))
         return row
     ref_midi, refok = grid_ref(ref_csv, t)
     st = z["st"]
