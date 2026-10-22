@@ -159,6 +159,29 @@ try:
         except Exception:
             pass
 
+    print("T8 番犬の補助プロセスを対象に数えない（対象0なら完了して終わる）")
+    clear(inbox)
+    # 番犬はプロセス一覧を取るために毎回 PowerShell を1つ起動し、その問い合わせ文には --pattern の文字列が丸ごと入る。
+    # 直す前は、その補助プロセス自身が「監視対象」に数えられていたため、仕事が終わっても対象が 0 にならず、
+    # 「対象プロセスが無くなったため監視を終了」の道に入れなかった（番犬が居座る）。
+    # ここでは実在しないプロセスの文字列をパターンにして、一致しうるのが補助プロセスだけの状態を作る。
+    # 注意＝下の文字列を端末に打ち込んでからこのテストを走らせると、その端末（bash や powershell）の
+    # コマンドラインにも同じ文字列が載って「対象あり」になり、この項目だけ落ちる。編集は端末経由で行わないこと。
+    HELPER_ONLY = "kv_selftest_helper_only_mark_20261023"
+    job8 = dict(job)
+    job8["pattern"] = HELPER_ONLY
+    job8["seen"] = True                    # 一度は対象を見たことにして、起動直後の猶予を外す
+    job8["pids"] = {}
+    job8["started"] = time.time() - 600
+    job8["idle"] = 999                     # 停滞では終わらない設定＝「対象0」でだけ終わることを見る
+    job8["last_progress"] = time.time()
+    json.dump([job8], open(jobs, "w", encoding="utf-8"), ensure_ascii=False)
+    r = run_wd(["--once", "--jobs", jobs, "--inbox", inbox])
+    t = "\n".join(inbox_texts(inbox))
+    check("対象0と判定して監視を終了する", "プロセス終了" in t, t[:200].replace("\n", " / "))
+    check("停滞停止にはなっていない", "停滞を検知して停止" not in t, t[:200].replace("\n", " / "))
+    check("台帳からジョブが落ちている", json.load(open(jobs, encoding="utf-8")) == [])
+
     print("T5 本物の台帳と受信箱に触れていない")
     real_jobs = os.path.join(HERE, "watchdog_jobs.json")
     check("本物の watchdog_jobs.json は読めるまま",
