@@ -80,6 +80,70 @@ def hhmmss(s):
     return None
 
 
+# ---------------------------------------------------------------- 極値列の抽出（判定条件の格子探索 --grid 用）
+def extrema_in(z, ta, tb):
+    """区間 [ta,tb] の有声区間ごとに「山谷を交互に並べた列」を返す。
+    返り値 ＝ [(時刻の配列[s], 残差の配列[cent]), ...]。
+    移動中央値の窓 MED だけに依存し、山谷差の下限・速さの範囲・対の数には依存しないので、
+    判定条件を振る探索ではこれを一度だけ作って再利用できる。"""
+    hop = float(z["hop"]); t0 = float(z["t0"]); st = z["st"]; v = z["voiced"] > 0.5; T = len(st)
+    i0 = max(0, int(round((ta - t0) / hop))); i1 = min(T, int(round((tb - t0) / hop)))
+    if i1 - i0 < int(MED * FR):
+        return []
+    cents = st[i0:i1].astype(np.float64) * 100.0
+    vo = v[i0:i1]; n = len(vo)
+    runs = []; i = 0
+    while i < n:
+        if not vo[i]:
+            i += 1; continue
+        j = i
+        while j < n and vo[j]:
+            j += 1
+        if j - i >= int(MED * FR):
+            runs.append((i, j))
+        i = j
+    kmed = int(MED * FR) | 1
+    out = []
+    for (i, j) in runs:
+        c = cents[i:j]
+        r = c - median_filter(c, size=kmed, mode="nearest")
+        pk, _ = find_peaks(r, distance=3); tr, _ = find_peaks(-r, distance=3)
+        e = sorted([(p + i, r[p], 1) for p in pk] + [(q + i, r[q], -1) for q in tr])
+        al = []
+        for x in e:
+            if al and al[-1][2] == x[2]:
+                if (x[2] == 1 and x[1] > al[-1][1]) or (x[2] == -1 and x[1] < al[-1][1]):
+                    al[-1] = x
+            else:
+                al.append(x)
+        if len(al) >= 2:
+            out.append((np.array([t0 + (i0 + a[0]) * hop for a in al]),
+                        np.array([a[1] for a in al])))
+    return out
+
+
+def chain_durs(ex, dmin, fmin, fmax, min_pairs):
+    """極値列から連鎖を取り、1 本ごとの長さ[s]（最初の極値から最後の極値まで ＋ 半周期 1 つ）を返す。
+    連鎖 ＝ 隣り合う山谷の差 >= dmin cent かつ 半周期 ∈ [1/(2*fmax), 1/(2*fmin)] s を満たす対が
+    min_pairs 組以上続く、途切れない最長の並び（chains_in と同じ規則を配列で解いたもの）。"""
+    hmin, hmax = 1.0 / (2 * fmax), 1.0 / (2 * fmin)
+    durs = []
+    for (t, v) in ex:
+        if len(t) < min_pairs + 1:
+            continue
+        dv = np.abs(np.diff(v)); dt = np.diff(t)
+        ok = (dv >= dmin) & (dt >= hmin) & (dt <= hmax)
+        if not ok.any():
+            continue
+        idx = np.flatnonzero(np.diff(np.concatenate(([0], ok.view(np.int8), [0]))))
+        for s, e in zip(idx[0::2], idx[1::2]):      # ok[s:e] が連続 True ＝ 対が e-s 組
+            if e - s < min_pairs:
+                continue
+            rate = 1.0 / (2 * float(np.median(dt[s:e])))
+            durs.append(t[e] - t[s] + 0.5 / rate)
+    return np.array(durs)
+
+
 # ---------------------------------------------------------------- ビブラート連鎖（定義は docstring 参照）
 def chains_in(z, ta, tb):
     hop = float(z["hop"]); t0 = float(z["t0"]); st = z["st"]; v = z["voiced"] > 0.5; T = len(st)
@@ -299,13 +363,179 @@ def item_stats(df, dam_col, meas_col, label, unit, scope):
     return out
 
 
+def paired(sessions, out):
+    """[(session, video, song, npz, span, DAM のビブラート合計秒)] を返す（音を読まない軽い前段）。"""
+    res = []
+    for ses in sessions:
+        recs = recordings(ses, out)
+        if not recs:
+            continue
+        dam = dam_rows(ses); pair = match_dam(recs, dam)
+        for i, r in enumerate(recs):
+            if i not in pair:
+                continue
+            dr = dam.iloc[pair[i][0]]
+            res.append((ses, r["video"], r["song"], r["npz"], r["span"],
+                        float(dr["vibratoTotalSecond"]) if pd.notna(dr["vibratoTotalSecond"]) else np.nan))
+    return res
+
+
+def stats_of(x, y):
+    """DAM 側 x と測定側 y の対応の強さ。n・r・ρ・p・差の中央値・差の絶対値の中央値・比の中央値。"""
+    m = np.isfinite(x) & np.isfinite(y)
+    x, y = x[m], y[m]
+    d = dict(n=int(len(x)))
+    if len(x) >= 4 and np.std(x) > 0 and np.std(y) > 0:
+        d["pearson_r"] = round(float(stats.pearsonr(x, y)[0]), 3)
+        rho, p = stats.spearmanr(x, y)
+        d["spearman_rho"] = round(float(rho), 3); d["spearman_p"] = float(f"{p:.3g}")
+    else:
+        d["pearson_r"] = d["spearman_rho"] = d["spearman_p"] = None
+    diff = y - x
+    d["median_diff"] = round(float(np.median(diff)), 2) if len(diff) else None
+    d["median_abs_diff"] = round(float(np.median(np.abs(diff))), 2) if len(diff) else None
+    with np.errstate(divide="ignore", invalid="ignore"):
+        rr = np.where(x != 0, y / np.where(x == 0, np.nan, x), np.nan)
+    rr = rr[np.isfinite(rr)]
+    d["median_ratio"] = round(float(np.median(rr)), 3) if len(rr) else None
+    d["within_05"] = round(float(np.mean(np.abs(diff) < 0.5)), 3) if len(diff) else None
+    d["within_15"] = round(float(np.mean(np.abs(diff) < 1.5)), 3) if len(diff) else None
+    return d
+
+
+# 格子（指示 2026-10-23・候補は全部回す）
+G_DMIN = [10.0, 15.0, 20.0, 30.0]
+G_BAND = [(3.0, 9.0), (4.0, 8.0), (4.5, 8.0)]
+G_PAIRS = [2, 3, 4]
+G_MINLEN = [0.0, 0.4, 0.6, 0.8]
+
+
+def run_grid(sessions, out):
+    """ビブラートの判定条件を格子で振り、DAM のビブラート合計秒との対応を表にする。"""
+    pr = paired(sessions, out)
+    print(f"格子探索 対象 {len(pr)} 本・条件 {len(G_DMIN)*len(G_BAND)*len(G_PAIRS)*len(G_MINLEN)} 通り", flush=True)
+    ex = {}
+    for k, (ses, video, song, npz, span, dsec) in enumerate(pr):
+        ex[(ses, video)] = extrema_in(np.load(npz), span[0], span[1])
+        if (k + 1) % 20 == 0:
+            print(f"  極値列 {k+1}/{len(pr)}", flush=True)
+    rows = []
+    for dmin in G_DMIN:
+        for (fmin, fmax) in G_BAND:
+            for np_ in G_PAIRS:
+                durs = {(p[0], p[1]): chain_durs(ex[(p[0], p[1])], dmin, fmin, fmax, np_) for p in pr}
+                for mlen in G_MINLEN:
+                    sec = np.array([float(durs[(p[0], p[1])][durs[(p[0], p[1])] >= mlen].sum()) for p in pr])
+                    dam = np.array([p[5] for p in pr])
+                    ses = np.array([p[0] for p in pr])
+                    base = dict(dmin_cent=dmin, f_lo_hz=fmin, f_hi_hz=fmax, min_pairs=np_, min_len_sec=mlen)
+                    r = dict(base); r["scope"] = "全体"; r.update(stats_of(dam, sec))
+                    r["median_meas_sec"] = round(float(np.median(sec)), 2); rows.append(r)
+                    for s in sorted(set(ses)):
+                        m = ses == s
+                        r = dict(base); r["scope"] = s; r.update(stats_of(dam[m], sec[m]))
+                        r["median_meas_sec"] = round(float(np.median(sec[m])), 2); rows.append(r)
+    G = pd.DataFrame(rows)
+    cols = ["scope", "dmin_cent", "f_lo_hz", "f_hi_hz", "min_pairs", "min_len_sec", "n",
+            "pearson_r", "spearman_rho", "spearman_p", "median_diff", "median_abs_diff", "median_ratio", "median_meas_sec"]
+    G = G[cols].sort_values(["scope", "dmin_cent", "f_lo_hz", "min_pairs", "min_len_sec"])
+    G.to_csv(out / "c3_vibrato_grid.csv", index=False, encoding="utf-8-sig")
+    print(f"→ {out/'c3_vibrato_grid.csv'}（{len(G)} 行）", flush=True)
+    for s in ["全体"] + sorted(set(G.scope) - {"全体"}):
+        g = G[G.scope == s].dropna(subset=["pearson_r"])
+        un = g[(g.median_ratio >= 0.9) & (g.median_ratio <= 1.1)]
+        pick = (un.loc[un.pearson_r.idxmax()] if len(un) else g.loc[g.pearson_r.idxmax()])
+        print(f"  [{s}] 最良（比 0.9〜1.1 のうち r 最大）= dmin {pick.dmin_cent:g} / {pick.f_lo_hz:g}-{pick.f_hi_hz:g} Hz / 対 {pick.min_pairs:g} 以上 / 下限 {pick.min_len_sec:g} s"
+              f" → r={pick.pearson_r} ρ={pick.spearman_rho} 差={pick.median_diff} 比={pick.median_ratio}"
+              f"{'' if len(un) else '（比 0.9〜1.1 に該当なし＝r 最大で代替）'}", flush=True)
+        b = g.loc[g.pearson_r.idxmax()]
+        print(f"       r 最大 = dmin {b.dmin_cent:g} / {b.f_lo_hz:g}-{b.f_hi_hz:g} Hz / 対 {b.min_pairs:g} / 下限 {b.min_len_sec:g} s → r={b.pearson_r} 差={b.median_diff} 比={b.median_ratio}", flush=True)
+    cur = G[(G.scope == "全体") & (G.dmin_cent == 15) & (G.f_lo_hz == 3) & (G.min_pairs == 3) & (G.min_len_sec == 0.6)]
+    if len(cur):
+        c = cur.iloc[0]
+        print(f"  [現行条件] dmin 15 / 3-9 Hz / 対 3 / 下限 0.6 s → r={c.pearson_r} ρ={c.spearman_rho} 差={c.median_diff} 比={c.median_ratio}", flush=True)
+    return 0
+
+
+REF = BASE / "pitchbar_read_20261008/out"
+
+
+def run_range_probe(sessions, out):
+    """DAM の音域が「歌唱の音域」か「基準メロディの音域」かを切り分ける。
+    基準メロディ ＝ 音程ガイド表示の読み取り結果（`pitchbar_read_20261008/out/<video>_ref.csv` の ref_midi）。"""
+    T = pd.read_csv(out / "c3_consistency_songs.csv", encoding="utf-8-sig")
+    rows = []
+    for _, r in T.iterrows():
+        p = REF / f"{r['video']}_ref.csv"
+        d = dict(session=r["session"], video=r["video"], song=r["song"],
+                 dam_low=r["dam_singingRangeLowest"], dam_high=r["dam_singingRangeHighest"],
+                 sing_hc_min=r.get("meas_note_hc_min"), sing_hc_p5=r.get("meas_note_hc_p5"),
+                 sing_hc_max=r.get("meas_note_hc_max"), sing_hc_p95=r.get("meas_note_hc_p95"))
+        if p.exists():
+            f = pd.read_csv(p, encoding="utf-8-sig")
+            f = f[(f["audio_time_sec"] >= r["span_lo"]) & (f["audio_time_sec"] <= r["span_hi"])]
+            g = f[f["ref_midi"].notna()]
+            gh = g[g["conf"] >= 0.5]
+            for tag, h in (("ref", g), ("ref_hc", gh)):
+                if len(h) >= 100:
+                    d[f"{tag}_min"] = round(float(h["ref_midi"].min()), 1)
+                    d[f"{tag}_p5"] = round(float(np.percentile(h["ref_midi"], 5)), 1)
+                    d[f"{tag}_p95"] = round(float(np.percentile(h["ref_midi"], 95)), 1)
+                    d[f"{tag}_max"] = round(float(h["ref_midi"].max()), 1)
+                    d[f"{tag}_n"] = len(h)
+                else:
+                    for k in ("min", "p5", "p95", "max", "n"):
+                        d[f"{tag}_{k}"] = np.nan
+        else:
+            for tag in ("ref", "ref_hc"):
+                for k in ("min", "p5", "p95", "max", "n"):
+                    d[f"{tag}_{k}"] = np.nan
+        rows.append(d)
+    R = pd.DataFrame(rows)
+    R.to_csv(out / "c3_range_probe.csv", index=False, encoding="utf-8-sig")
+    comp = [("最低音 対 基準メロディの最低値", "dam_low", "ref_min"),
+            ("最低音 対 基準メロディの 5 パーセンタイル", "dam_low", "ref_p5"),
+            ("最低音 対 歌唱の高信頼 5 パーセンタイル", "dam_low", "sing_hc_p5"),
+            ("最低音 対 歌唱の高信頼な最小値", "dam_low", "sing_hc_min"),
+            ("最高音 対 基準メロディの最高値", "dam_high", "ref_max"),
+            ("最高音 対 基準メロディの 95 パーセンタイル", "dam_high", "ref_p95"),
+            ("最高音 対 歌唱の高信頼 95 パーセンタイル", "dam_high", "sing_hc_p95"),
+            ("最高音 対 歌唱の高信頼な最大値", "dam_high", "sing_hc_max")]
+    srows = []
+    for label, dc, mc in comp:
+        sub = R.dropna(subset=[dc, mc])
+        # 比較は同じ録音集合で行う＝基準メロディが読めている録音（9/24 の 28 本）に揃えた列を必ず出す
+        for scope in ["基準メロディあり"] + sorted(set(sub["session"].astype(str))):
+            s = sub[sub["ref_min"].notna()] if scope.startswith("基準") else sub[sub["session"].astype(str) == scope]
+            if not len(s):
+                continue
+            d = dict(item=label, scope=scope, dam_col=dc, meas_col=mc)
+            d.update(stats_of(s[dc].to_numpy(float), s[mc].to_numpy(float)))
+            srows.append(d)
+    S = pd.DataFrame(srows)
+    S.to_csv(out / "c3_range_probe_stats.csv", index=False, encoding="utf-8-sig")
+    print(f"→ {out/'c3_range_probe.csv'} / c3_range_probe_stats.csv", flush=True)
+    for _, r in S.iterrows():
+        print(f"  [{r['scope']}] {r['item']}: n={r['n']} r={r['pearson_r']} ρ={r['spearman_rho']} 差={r['median_diff']} |差|={r['median_abs_diff']} ±0.5内={r['within_05']} ±1.5内={r['within_15']}", flush=True)
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--sessions", default="20260924,20261014,20261021")
     ap.add_argument("--out", default=str(BASE / "c3_consistency_20261023"))
+    ap.add_argument("--grid", action="store_true", help="ビブラートの判定条件を格子で振る（整合表は作り直さない）")
+    ap.add_argument("--range-probe", action="store_true", help="DAM の音域と基準メロディ・歌唱の音域を並べる（整合表は作り直さない）")
     a = ap.parse_args()
     out = Path(a.out); out.mkdir(parents=True, exist_ok=True)
     sessions = [s for s in a.sessions.split(",") if s]
+    if a.grid or a.range_probe:
+        rc = 0
+        if a.grid:
+            rc |= run_grid(sessions, out)
+        if a.range_probe:
+            rc |= run_range_probe(sessions, out)
+        return rc
 
     rows, skipped = [], []
     for ses in sessions:
