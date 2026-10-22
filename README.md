@@ -39,7 +39,7 @@
 | `03_detector/` | `features/` pYIN・索引・特徴量・吸着ラベル・過去演奏ペア／`models/` CRNN `train_crnn.py`・規則・ノート分類・DTW 転写・件数混合／`eval/` 事象 F1・件数整合／`vibrato_depth/` ビブラートの深さ・速さの測定 |
 | `04_marks/` | 加点マーク抽出 `detect_marks.py` → `rematch.py` → `refine_onsets.py` → `summarize.py`（駆動 `run_session.py`・別案 `flash_detect.py`） |
 | `05_pitchbar/` | `read/` 音程バー読取 `read_pitchbar.py`（設計メモ同梱）／`render/` 音程バー描画 `render_pitchbar.py` |
-| `06_report/` | 1 録音レポート `evaluate_recording.py`（使い方 `README_evaluate_recording.md`）・合否付き台帳 `build_ledgers_*`・歌声の数値 `song_metrics.py` |
+| `06_report/` | 1 録音レポート `evaluate_recording.py`（使い方 `README_evaluate_recording.md`）・合否付き台帳 `build_ledgers_*`・歌声の数値 `song_metrics.py`・C3 整合表 `c3_consistency_table.py`（下ごしらえ＝100 fps ピッチ曲線 `c3_pitch_feats.py`） |
 | `tools/` | 無人ジョブの番犬 `job_watchdog.py` |
 | `legacy/` | 同系の旧版（日付サフィックス違い）。系列ごとに同じ構成 |
 | `support/` | 一回限りの修正・調査・セルフテスト・実験用 |
