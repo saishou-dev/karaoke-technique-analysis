@@ -47,7 +47,21 @@ LABEL = {0.40: "緩め", 0.50: "現行", 0.60: "厳しめ",
          (0.20, 0.30): "緩め", (0.30, 0.40): "現行", (0.45, 0.50): "厳しめ",
          "none": "緩め", "except_vibrato": "現行", "all": "厳しめ"}
 
-def base():
+CSV_0924 = os.path.join(MARKS_DIR, "marks_20260924.csv")
+
+def base(session=20261014):
+    """歯止めの入力（自己相関・種類相関・窓先頭到達）が入った表を作る。復号も再実行もしない。
+
+    10/14＝精緻化前の退避 + 中間ファイル `partial_20261014\\*_refined.csv` を結合。
+    9/24 ＝`marks_20260924.csv` に精緻化の列が既に結合済みなので、それをそのまま読む。
+           精緻化前の印の時刻は `mark_time_raw` 列に残っている。"""
+    if int(session) == 20260924:
+        df = pd.read_csv(CSV_0924)
+        for c in ("video_time_sec", "mark_time_raw", "mark_time_refined",
+                  "ncc_at_v4", "cls_ncc", "hit_start", "mark_x", "mark_y"):
+            if c in df.columns: df[c] = pd.to_numeric(df[c], errors="coerce")
+        df["mark_time_sec"] = df["mark_time_raw"]      # 精緻化前の印の時刻
+        return df
     pre = pd.read_csv(PRE)
     for c in ("mark_time_sec", "video_time_sec", "mark_x", "mark_y"):
         pre[c] = pd.to_numeric(pre[c], errors="coerce")
@@ -75,6 +89,15 @@ def apply_gates(df, self_min, cls_pair, start_mode):
     out["lead"] = np.where(has, out.video_time_sec - out.mark_time_refined, np.nan)
     return out, int(bad_self.sum()), int(bad_cls.sum()), int(bad_start.sum())
 
+def by_counter_gates(out, counter="vibrato"):
+    """ある技法だけの裾（件数・2秒超・90%点・最大）"""
+    g = out[out.ok & (out.counter == counter)].lead
+    return dict(件数=len(g),
+                超2秒=round(float((g > 2.0).mean()), 3) if len(g) else np.nan,
+                p90=round(float(g.quantile(.9)), 3) if len(g) else np.nan,
+                最大=round(float(g.max()), 3) if len(g) else np.nan,
+                中央値=round(float(g.median()), 3) if len(g) else np.nan)
+
 def metrics(out):
     n_proc = len(out)
     n_ok = int(out.ok.sum())
@@ -95,7 +118,7 @@ def metrics(out):
                 ビブラートp90=round(float(vib.quantile(.9)), 3) if len(vib) else np.nan,
                 ビブラート最大=round(float(vib.max()), 3) if len(vib) else np.nan)
 
-def sweep(df):
+def sweep(df, label=""):
     rows = []
     for s, c, st in itertools.product(SELFS, CLSS, STARTS):
         out, b1, b2, b3 = apply_gates(df, s, c, st)
@@ -103,6 +126,7 @@ def sweep(df):
                  種類相関=f"{c[0]:.2f}/{c[1]:.2f}({LABEL[c]})",
                  窓先頭=f"{st}({LABEL[st]})",
                  無効化=b1 + b2 + b3, 内訳=f"自己{b1}/種類{b2}/先頭{b3}")
+        if label: r = dict(セッション=label, **r)
         r.update(metrics(out))
         rows.append(r)
     return pd.DataFrame(rows)
@@ -147,9 +171,60 @@ def plot_curve(d, t_onset, t_v4, title, W=960, H=260):
     cv2.putText(img, f"{t[-1]:.1f}s", (W - 110, H - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1)
     return img
 
+TECH = ["vibrato", "shakuri", "kobushi", "accent", "hammering", "fall"]
+
+def rank_table(session, label, min_n=20):
+    """27 通りそれぞれで「裾がいちばん長い技法」を求める。
+    割合そのものは閾値で動くので、**順位が安定かどうか**を見るための表。
+    件数 min_n 未満の技法は順位の判定から外す（10/14 のビブラートのように数件では読めないため）。"""
+    df = base(session)
+    rows = []
+    for s, c, st in itertools.product(SELFS, CLSS, STARTS):
+        out, *_ = apply_gates(df, s, c, st)
+        d = dict(セッション=label, 自己相関=f"{s:.2f}", 種類相関=f"{c[0]:.2f}/{c[1]:.2f}", 窓先頭=st)
+        v2, v90 = {}, {}
+        for t in TECH:
+            m = by_counter_gates(out, t)
+            d[JP[t] + "_n"] = m["件数"]; d[JP[t] + "_超2秒"] = m["超2秒"]; d[JP[t] + "_p90"] = m["p90"]
+            if m["件数"] >= min_n:
+                v2[t] = m["超2秒"]; v90[t] = m["p90"]
+        d["超2秒の最大の技法"] = JP[max(v2, key=v2.get)] if v2 else "-"
+        d["p90の最大の技法"] = JP[max(v90, key=v90.get)] if v90 else "-"
+        rows.append(d)
+    return pd.DataFrame(rows)
+
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser(); ap.add_argument("--top", type=int, default=12)
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--top", type=int, default=12)
+    ap.add_argument("--session", type=int, default=20261014)
+    ap.add_argument("--rank", action="store_true", help="27通りで裾がいちばん長い技法を数える")
     a = ap.parse_args()
+    if a.rank:
+        for sess, lab in ((20260924, "9/24"), (20261014, "10/14")):
+            t = rank_table(sess, lab)
+            t.to_csv(os.path.join(P.OUT_DIR, f"gates_rank_{sess}.csv"), index=False, encoding="utf-8-sig")
+            print(f"=== {lab}：27通りのうち、裾がいちばん長い技法（件数20以上の技法だけで判定） ===")
+            print("  2秒超が最大 :", t["超2秒の最大の技法"].value_counts().to_dict())
+            print("  p90 が最大  :", t["p90の最大の技法"].value_counts().to_dict())
+            print("  ビブラート 件数 %d〜%d / 2秒超 %.3f〜%.3f / p90 %.3f〜%.3f"
+                  % (t["ビブラート_n"].min(), t["ビブラート_n"].max(),
+                     t["ビブラート_超2秒"].min(), t["ビブラート_超2秒"].max(),
+                     t["ビブラート_p90"].min(), t["ビブラート_p90"].max()))
+            print()
+        sys.exit(0)
+    if a.session == 20260924:
+        df = base(20260924)
+        sw = sweep(df, "9/24")
+        sw.to_csv(os.path.join(P.OUT_DIR, "gates_sweep_0924.csv"), index=False, encoding="utf-8-sig")
+        cols = ["自己相関", "種類相関", "窓先頭", "抽出", "抽出率", "有効件数", "残差の中央値",
+                "残差05秒以内", "ビブラート件数", "ビブラート2秒超", "ビブラートp90", "ビブラート最大"]
+        print("=== 9/24・27通り（ビブラートの2秒超が高い順） ===")
+        print(sw.sort_values("ビブラート2秒超", ascending=False)[cols].to_string(index=False))
+        print()
+        print("=== ビブラートの裾の振れ幅 ===")
+        for k in ("ビブラート件数", "ビブラート2秒超", "ビブラートp90", "ビブラート最大"):
+            print("  %-14s 最小 %8.3f  最大 %8.3f  幅 %8.3f" % (k, sw[k].min(), sw[k].max(), sw[k].max() - sw[k].min()))
+        sys.exit(0)
     df = base()
     print(f"精緻化の対象 {len(df)} 行／精緻化が値を返した {int(df.mark_time_refined.notna().sum())} 件")
     sw = sweep(df)
