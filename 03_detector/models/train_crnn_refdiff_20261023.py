@@ -11,7 +11,14 @@
 使い方:
   python train_crnn_refdiff_20261023.py --tag c2a_base    --epochs 4
   python train_crnn_refdiff_20261023.py --tag c2b_refdiff --epochs 4 --refdiff
-出力: out/<tag>/model.pt, report.md, pred_<split>.csv, persong_<split>.csv, metrics.json
+  python train_crnn_refdiff_20261023.py --tag c2b_refdiff_cov30 --epochs 8 --refdiff --min_ref_frac 0.30
+出力: out/<tag>/model.pt, report.md, pred_<split>.csv, persong_<split>.csv, metrics.json, ref_frac.csv
+
+--min_ref_frac（2026-10-24 追加）。
+お手本付きとして学習に使う曲を「被覆がこの値以上」の曲だけに絞ります（既定 0 ＝従来どおり全部使う）。
+被覆＝お手本の差の列が値を持つフレーム割合（build_refdiff_feats が書く feats_refdiff/_coverage.csv の both_frac）。
+下回った曲は学習から外すのではなく、その曲の「お手本との音程差」と「欠損の印」を全フレーム 0 にします（曲そのものは学習に残る）。
+dev・test の曲は絞りません（しきい値の決め方と未見の試験を v4 と同じに保つため）。分割の規則も従来どおりです。
 """
 import os, sys, json, time, argparse, random, csv
 import numpy as np, torch, torch.nn as nn, torch.nn.functional as Fn
@@ -31,21 +38,66 @@ ap.add_argument("--pw_cap", type=float, default=30.0, help="pos_weightの上限"
 ap.add_argument("--thr_mode", default="f1", choices=["f1", "count"], help="devでのしきい値決定：F1最大 or 件数差最小")
 ap.add_argument("--refdiff", action="store_true", help="入力に「お手本との音程差」と「欠損の印」の2列を足す（2026-10-23 追加）")
 ap.add_argument("--only_with_ref", action="store_true", help="お手本が読めている曲だけを使う（2026-10-23 追加・比較の土俵をそろえたい時）")
+ap.add_argument("--min_ref_frac", type=float, default=0.0,
+                help="お手本付きとして学習に使う曲の被覆の下限（0〜1・既定0＝従来どおり全部使う）。"
+                     "被覆＝お手本の差の列が値を持つフレーム割合。これを下回る曲は学習側だけ「お手本なし」として扱う（dev・test と分割は変えない）。")
 a = ap.parse_args(); torch.set_num_threads(a.threads); random.seed(a.seed); np.random.seed(a.seed); torch.manual_seed(a.seed)
 OUT = f"{ROOT}/out/{a.tag}"; os.makedirs(OUT, exist_ok=True)
 index = json.load(open(f"{ROOT}/{a.index}", encoding="utf-8"))
 FR = 100  # frames/sec
 REFD = f"{ROOT}/feats_refdiff"
+EXC = set(x for x in a.exclude.split(",") if x)
 
 
 def has_ref(v):
     return os.path.exists(f"{REFD}/{v}.npz")
 
 
+def is_train_song(d):
+    """学習に回る曲か（test・dev・--exclude のどれでもない）。分割の規則は従来どおり。"""
+    return d["session"] not in (a.test, a.dev) and d["session"] not in EXC
+
+
+# 曲ごとの被覆。build_refdiff_feats_20261023.py の記録（_coverage.csv の both_frac
+# ＝お手本があり、かつ声が出ているフレームの割合）を正本とし、記録に無い曲は特徴量から直接数える。
+_COV = {}
+_COVCSV = f"{REFD}/_coverage.csv"
+if os.path.exists(_COVCSV):
+    with open(_COVCSV, encoding="utf-8-sig") as _f:
+        for _row in csv.DictReader(_f):
+            try:
+                _COV[_row["video"]] = float(_row["both_frac"])
+            except (KeyError, TypeError, ValueError):
+                pass
+
+
+def ref_frac(v):
+    """この曲の被覆（0〜1）。お手本の読取が無い曲は 0。"""
+    if v in _COV:
+        return _COV[v]
+    if not has_ref(v):
+        _COV[v] = 0.0
+    else:
+        z = np.load(f"{REFD}/{v}.npz")
+        _COV[v] = float(z["refvalid"].mean()) if "refvalid" in z.files else 0.0
+    return _COV[v]
+
+
+def use_ref(d):
+    """この曲で「お手本との音程差」の2列を実際に使うか。
+    --min_ref_frac を指定したときは、被覆がそれを下回る学習側の曲を「お手本なし」（2列が全部 0）として扱う。"""
+    v = d["video"]
+    if not (a.refdiff and has_ref(v)):
+        return False
+    if a.min_ref_frac > 0 and is_train_song(d) and ref_frac(v) < a.min_ref_frac:
+        return False
+    return True
+
+
 def load(d):
     v = d["video"]
     # --refdiff のときは列を足した別名ファイル（feats_refdiff）を優先して読む。無ければ従来のファイル＋全欠損の2列。
-    src = f"{REFD}/{v}.npz" if (a.refdiff and has_ref(v)) else f"{ROOT}/feats/{v}.npz"
+    src = f"{REFD}/{v}.npz" if use_ref(d) else f"{ROOT}/feats/{v}.npz"
     z = np.load(src)
     lm = z["logmel"].astype(np.float32); T = lm.shape[1]
     st = z["st"]; vo = z["voiced"]
@@ -79,12 +131,24 @@ for d in index:
     if a.only_with_ref and not has_ref(d["video"]): continue
     data[d["video"]] = (d,) + load(d)
 CIN = next(iter(data.values()))[1].shape[0]
-EXC = set(x for x in a.exclude.split(",") if x)
-train = [v for v, (d, *_) in data.items() if d["session"] not in (a.test, a.dev) and d["session"] not in EXC]
+train = [v for v, (d, *_) in data.items() if is_train_song(d)]
 dev = [v for v, (d, *_) in data.items() if d["session"] == a.dev]
 test = [v for v, (d, *_) in data.items() if d["session"] == a.test]
 nref = dict(train=sum(has_ref(v) for v in train), dev=sum(has_ref(v) for v in dev), test=sum(has_ref(v) for v in test))
-print(f"train {len(train)} dev {len(dev)} test {len(test)} cin {CIN} refdiff={a.refdiff} お手本ありの曲数 {nref}", flush=True)
+nused = dict(train=sum(use_ref(data[v][0]) for v in train), dev=sum(use_ref(data[v][0]) for v in dev), test=sum(use_ref(data[v][0]) for v in test))
+# 曲ごとの被覆と足切りの結果を記録に残す（--min_ref_frac の検証用）。
+with open(f"{OUT}/ref_frac.csv", "w", newline="", encoding="utf-8-sig") as _f:
+    _w = csv.writer(_f); _w.writerow(["video", "session", "split", "has_ref", "ref_frac", "used_as_ref"])
+    for _v, (_d, *_rest) in data.items():
+        _sp = "test" if _d["session"] == a.test else ("dev" if _d["session"] == a.dev else ("excluded" if _d["session"] in EXC else "train"))
+        _w.writerow([_v, _d["session"], _sp, int(has_ref(_v)), f"{ref_frac(_v):.3f}", int(use_ref(_d))])
+print(f"train {len(train)} dev {len(dev)} test {len(test)} cin {CIN} refdiff={a.refdiff} min_ref_frac={a.min_ref_frac} お手本ありの曲数 {nref} お手本として使った曲数 {nused}", flush=True)
+if a.min_ref_frac > 0:
+    _drop = {}
+    for _v in train:
+        _d = data[_v][0]
+        if has_ref(_v) and not use_ref(_d): _drop[_d["session"]] = _drop.get(_d["session"], 0) + 1
+    print(f"被覆 {a.min_ref_frac} 未満で学習のお手本から外した曲（セッション別）＝{_drop}（計 {sum(_drop.values())}曲）", flush=True)
 allX = np.concatenate([data[v][1] for v in train], 1); mu = allX.mean(1, keepdims=True); sd = allX.std(1, keepdims=True) + 1e-5; del allX
 np.save(f"{OUT}/norm.npy", np.stack([mu[:, 0], sd[:, 0]]))
 pos = np.array([sum((data[v][2][k] > 0.5).sum() for v in train) for k in range(len(TYPES))], float); tot = sum(data[v][2].shape[1] for v in train)
@@ -207,8 +271,8 @@ print("best dev", best, flush=True)
 net.load_state_dict(torch.load(f"{OUT}/model.pt")); thr = best[2]
 rep = [f"# C2 比較 {a.tag}（{time.strftime('%Y-%m-%d %H:%M')}）", "",
        "学習＝" + ",".join(sorted({data[v][0]['session'] for v in train})) + f"／dev（しきい値決定）＝{a.dev}／test（未見）＝{a.test}",
-       f"epochs={a.epochs} sigma={a.sigma}f lagshift={a.lagshift}s chunk={a.chunk} bs={a.bs} hid={a.hid} seed={a.seed} no_mel={a.no_mel} refdiff={a.refdiff} only_with_ref={a.only_with_ref} cin={CIN} best_ep={best[1]}",
-       f"曲数＝学習{len(train)}／dev{len(dev)}／test{len(test)}・うちお手本ありの曲数＝{nref}", f"しきい値={thr}", ""]
+       f"epochs={a.epochs} sigma={a.sigma}f lagshift={a.lagshift}s chunk={a.chunk} bs={a.bs} hid={a.hid} seed={a.seed} no_mel={a.no_mel} refdiff={a.refdiff} only_with_ref={a.only_with_ref} min_ref_frac={a.min_ref_frac} cin={CIN} best_ep={best[1]}",
+       f"曲数＝学習{len(train)}／dev{len(dev)}／test{len(test)}・うちお手本ありの曲数＝{nref}・うちお手本として使った曲数＝{nused}", f"しきい値={thr}", ""]
 metrics = {}
 for name, vids in (("dev", dev), ("test", test)):
     probs = {v: predict(v) for v in vids}
@@ -229,6 +293,7 @@ for name, vids in (("dev", dev), ("test", test)):
                 for t, p in pick(probs[v][k], thr[c], a.min_dist): w.writerow([v, c, f"{t:.2f}", f"{p:.3f}"])
 open(f"{OUT}/report.md", "w", encoding="utf-8").write("\n".join(rep))
 json.dump(dict(metrics=metrics, thr=thr, best=best, cin=CIN, refdiff=bool(a.refdiff), only_with_ref=bool(a.only_with_ref),
+               min_ref_frac=float(a.min_ref_frac), n_ref_used=nused,
                n_train=len(train), n_dev=len(dev), n_test=len(test), n_ref=nref, epochs=a.epochs, seed=a.seed, bs=a.bs,
                elapsed_sec=round(time.time() - t0, 1)), open(f"{OUT}/metrics.json", "w"), indent=1)
 print("\n".join(rep)); print("DONE", OUT)
