@@ -63,10 +63,12 @@ if __name__ == "__main__":
     ap.add_argument("--epochs", type=int, default=8, help="見出しに書くための学習回数（測り直しでは学習しない）")
     ap.add_argument("--threads", type=int, default=12)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--label", default="", help="表のファイル名に付ける見分け（同日に2回走らせる時の衝突回避）")
     a = ap.parse_args()
 
     if a.wait_log:
         t0 = time.time()
+        print(f"前段待ち 開始 {time.strftime('%H:%M:%S')} 印='{a.wait_mark}' ログ={a.wait_log}", flush=True)
         while time.time() - t0 < a.max_wait_hours * 3600:
             try:
                 if a.wait_mark in open(a.wait_log, encoding="utf-8", errors="replace").read():
@@ -74,6 +76,7 @@ if __name__ == "__main__":
                     break
             except FileNotFoundError:
                 pass
+            print(f"待機中（前段の印 '{a.wait_mark}' を待っています） {time.strftime('%H:%M:%S')}", flush=True)
             time.sleep(120)
         else:
             print("待ち時間の上限に達した。前段が終わっていないので何もせずに終わる", flush=True)
@@ -94,5 +97,5 @@ if __name__ == "__main__":
     if len(done) == 2:
         run([os.path.join(HERE, "make_c2_table_20261023.py"),
              "--rows", f"現行の入力（しきい値＝件数最小）={done[0]},現行＋お手本との音程差（しきい値＝件数最小）={done[1]}",
-             "--out_name", f"C2別軸_しきい値の決め方_{time.strftime('%Y-%m-%d')}"], "小さい表")
+             "--out_name", f"C2別軸_しきい値の決め方_{time.strftime('%Y-%m-%d')}{a.label}"], "小さい表")
     print("THRMODE COUNT DONE", flush=True)

@@ -50,6 +50,7 @@ if __name__ == "__main__":
 
     if a.wait_log:
         t0 = time.time()
+        print(f"前段待ち 開始 {time.strftime('%H:%M:%S')} 印='{a.wait_mark}' ログ={a.wait_log}", flush=True)
         while time.time() - t0 < a.max_wait_hours * 3600:
             try:
                 if a.wait_mark in open(a.wait_log, encoding="utf-8", errors="replace").read():
@@ -57,6 +58,7 @@ if __name__ == "__main__":
                     break
             except FileNotFoundError:
                 pass
+            print(f"待機中（前段の印 '{a.wait_mark}' を待っています） {time.strftime('%H:%M:%S')}", flush=True)
             time.sleep(60)
         else:
             print("待ち時間の上限に達したので、今ある状態のまま進む", flush=True)
