@@ -9,6 +9,7 @@
   T2 開始時刻が不一致（＝PID 再利用を模す）→ **kill しない**・報告に「対象消失」が出る。
   T3 開始時刻が一致 → これまでどおり kill する。
   T4 登録後に再起動した（boot を細工）→ **kill しない**・報告に「再起動」が出る。
+  T9 --done-pattern＝ログに完了行が現れたら、対象プロセスを止めずに「完了」として終わる（既定なしなら従来どおり）。
 
 本物の watchdog_jobs.json と routine_inbox には触らない（--jobs／--inbox で隔離する）。
 使い方: python selftest_job_watchdog_20261015.py
@@ -181,6 +182,50 @@ try:
     check("対象0と判定して監視を終了する", "プロセス終了" in t, t[:200].replace("\n", " / "))
     check("停滞停止にはなっていない", "停滞を検知して停止" not in t, t[:200].replace("\n", " / "))
     check("台帳からジョブが落ちている", json.load(open(jobs, encoding="utf-8")) == [])
+
+    print("T9 完了行を終了の合図として読む（--done-pattern・2026-10-23 追加）")
+    clear(inbox)
+    victim9 = subprocess.Popen([sys.executable, "-c", f"import time;_='{MARK}';time.sleep(900)"])
+    time.sleep(3)
+    DONE_RE = r"20261014 完了"
+    job9 = dict(job); job9["boot"] = job["boot"]
+    job9["pattern"] = MARK
+    job9["pids"] = {}
+    job9["started"] = time.time() - 600
+    job9["seen"] = True
+    job9["idle"] = 999                     # 停滞では終わらない設定＝完了行でだけ終わることを見る
+    job9["last_progress"] = time.time()
+    job9["done_pattern"] = DONE_RE
+    # まだ完了行が無い状態＝終わらない（従来どおり監視を続ける）
+    json.dump([job9], open(jobs, "w", encoding="utf-8"), ensure_ascii=False)
+    r = run_wd(["--once", "--jobs", jobs, "--inbox", inbox])
+    check("完了行が無ければ監視を続ける（台帳に残る）",
+          len(json.load(open(jobs, encoding="utf-8"))) == 1, (r.stdout + r.stderr)[:200])
+    check("完了行が無ければ報告を書かない", not inbox_texts(inbox))
+    # 完了行を書く＝対象プロセスは生きたまま完了として終わる
+    with open(logf, "a", encoding="utf-8") as f:
+        f.write("2026-10-23 15:17:54 20261014 完了 抽出率45.5%（570/1253）\n")
+    r = run_wd(["--once", "--jobs", jobs, "--inbox", inbox])
+    time.sleep(1)
+    t = "\n".join(inbox_texts(inbox))
+    check("完了行を検知して監視を終了する", "完了行を検知" in t, t[:200].replace("\n", " / "))
+    check("対象プロセスは停止していない", alive(victim9.pid), "pid=%d" % victim9.pid)
+    check("停滞停止にはなっていない", "停滞を検知して停止" not in t, t[:200].replace("\n", " / "))
+    check("台帳からジョブが落ちている", json.load(open(jobs, encoding="utf-8")) == [])
+    # 既定（--done-pattern なし）では完了行があっても従来どおり＝停滞で止める
+    clear(inbox)
+    job9b = dict(job9); job9b["done_pattern"] = ""
+    job9b["idle"] = 0; job9b["last_progress"] = time.time() - 3600
+    json.dump([job9b], open(jobs, "w", encoding="utf-8"), ensure_ascii=False)
+    r = run_wd(["--once", "--jobs", jobs, "--inbox", inbox])
+    time.sleep(2)
+    t = "\n".join(inbox_texts(inbox))
+    check("既定（合図なし）では従来どおり停滞で停止する",
+          "停滞を検知して停止" in t and not alive(victim9.pid), t[:200].replace("\n", " / "))
+    try:
+        if victim9.poll() is None: victim9.kill()
+    except Exception:
+        pass
 
     print("T5 本物の台帳と受信箱に触れていない")
     real_jobs = os.path.join(HERE, "watchdog_jobs.json")

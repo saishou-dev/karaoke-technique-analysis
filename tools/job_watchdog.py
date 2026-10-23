@@ -5,6 +5,11 @@
         --idle 分のあいだどちらも無ければ停滞＝対象プロセスを全て停止し、<log と同じ場所>/WATCHDOG_STALLED.txt と
         hisho/routine_inbox/<日時>_watchdog.md（<!-- unread -->）を書いて終了する。
    終了＝対象プロセスが 0 になったら「完了」として受信箱に1行書いて終了。--max-hours を超えたら強制停止。
+        --done-pattern に正規表現を渡すと、--log（と --extra-files のファイル）にその行が現れた時点でも
+        「完了」として終了する（対象0 と同じ扱い＝プロセスは停止しない・既定なし＝従来どおり）。
+        例＝方式A の工程は最後に `<収録日> 完了 抽出率…` を progress.log に書くので --done-pattern "20261014 完了" を渡す。
+        注意＝progress.log は追記式なので、前回の走行の完了行が残っていると起動直後に完了と判定する。
+        作り直しのときは日時を含めるか（例 "2026-10-23 .* 20261014 完了"）、別のログに書かせること。
    使い方（分離起動）:
      Start-Process python -ArgumentList '"C:\\Users\\conan\\hisho\\ops\\tools\\job_watchdog.py" --pattern "marks_20260928|ffmpeg.*ビデオ素材" --log "G:\\...\\progress.log" --name マーク抽出 --idle 10' -WindowStyle Hidden
 """
@@ -20,6 +25,7 @@ ap.add_argument("--cpu-min", type=float, default=0.2, help="この分以上CPU�
 ap.add_argument("--max-hours", type=float, default=8)
 ap.add_argument("--grace", type=float, default=3, help="起動直後にプロセスが見つからなくても待つ分数")
 ap.add_argument("--extra-files", default="", help="サイズ/更新で進行判定に使う追加パス（;区切り・フォルダ可）")
+ap.add_argument("--done-pattern", default="", help="ログにこの正規表現の行が現れたら完了として終了する（既定なし＝従来どおり）")
 ap.add_argument("--once", action="store_true", help="常駐せず watchdog_jobs.json の全ジョブを1回点検して終了（タスクスケジューラ用）")
 ap.add_argument("--register", default="", help="watchdog_jobs.json にジョブを登録して終了（--pattern/--log/--name/--idle を使う）")
 ap.add_argument("--jobs", default="", help="ジョブ台帳のパス（既定＝このファイルと同じ場所の watchdog_jobs.json・自己テスト用）")
@@ -112,6 +118,32 @@ def progress_size():
     s = size_of(a.log)
     for p in filter(None, a.extra_files.split(";")): s += size_of(p)
     return s
+# ---- 2026-10-23 追加：完了行を終了の合図として読む（--done-pattern） --------
+# 方式A の工程は最後に「<収録日> 完了 抽出率…」を progress.log に書く。番犬はそれを読めず、
+# 対象プロセスが消えるまで居座るか、ラッパだけが残った状態を「停滞」と誤判定していた（10/23 08:11・11:12・11:14）。
+# --done-pattern にその行の正規表現を渡すと、見つけた時点で「完了」として自分で終了する。
+# 対象0 と同じ扱い＝プロセスは1本も停止しない（完走した仕事を殺さないため）。
+def done_hit(pattern, log_path, extra=""):
+    """--done-pattern に一致する行を返す（無ければ None）。ログは末尾 256KB だけ読む。"""
+    if not pattern: return None
+    try: rx = re.compile(pattern)
+    except re.error: return None
+    paths = [log_path] + [p for p in filter(None, extra.split(";"))]
+    for p in paths:
+        files = []
+        if os.path.isdir(p):
+            for root, _, fs in os.walk(p): files += [os.path.join(root, f) for f in fs]
+        elif p and os.path.exists(p):
+            files = [p]
+        for f in files:
+            try:
+                with open(f, "rb") as fh:
+                    if os.path.getsize(f) > 262144: fh.seek(-262144, os.SEEK_END)
+                    txt = fh.read().decode("utf-8", errors="replace")
+            except OSError: continue
+            for line in txt.splitlines():
+                if rx.search(line): return line.strip()
+    return None
 def inbox(title, body):
     os.makedirs(INBOX, exist_ok=True)
     fn = os.path.join(INBOX, datetime.datetime.now().strftime("%Y-%m-%d_%H%M") + f"_watchdog_{re.sub(r'[^0-9A-Za-z一-龥ぁ-んァ-ン]', '', a.name)[:20]}.md")
@@ -127,7 +159,7 @@ if a.register:
     j = load_jobs(); j = [x for x in j if x["name"] != a.register]
     job = dict(name=a.register, pattern=a.pattern, log=a.log, extra=a.extra_files, idle=a.idle, started=time.time(),
                last_size=None, last_cpu=None, last_progress=time.time(), seen=False, max_hours=a.max_hours,
-               boot=boot_time(), pids={})
+               boot=boot_time(), pids={}, done_pattern=a.done_pattern)
     note_pids(job, procs())  # 登録時点で既に走っているプロセスの開始時刻を控える
     j.append(job)
     save_jobs(j); print("registered", a.register, "boot=%s pids=%s" % (job["boot"], sorted(job["pids"]))); sys.exit(0)
@@ -135,9 +167,16 @@ if a.once:
     j = load_jobs(); keep = []
     for job in j:
         a.pattern, a.log, a.extra_files, a.name, a.idle, a.max_hours = job["pattern"], job["log"], job.get("extra", ""), job["name"], job.get("idle", 10), job.get("max_hours", 8)
+        a.done_pattern = job.get("done_pattern", "")
         ps = procs(); cpu = sum(c for _, c, _, _ in ps); size = progress_size(); now = time.time()
         if ps: job["seen"] = True
         note_pids(job, ps)
+        hit = done_hit(a.done_pattern, a.log, a.extra_files)
+        if hit:   # 完了行を検知＝対象0 と同じ扱い。プロセスは停止しない。
+            inbox(f"{a.name}＝完了行を検知（{(now - job['started']) / 60:.0f}分）",
+                  f"ログに完了行が現れたため監視を終了。\n完了行＝{hit}\n合図＝--done-pattern {a.done_pattern}\n"
+                  f"停止はしていない（残っているプロセスがあれば別件）。ログ＝{a.log}")
+            continue
         if job["last_size"] is None or size > job["last_size"] or (job["last_cpu"] is not None and cpu - job["last_cpu"] >= a.cpu_min): job["last_progress"] = now
         job["last_size"], job["last_cpu"] = size, cpu
         elapsed_min = (now - job["started"]) / 60; idle_min = (now - job["last_progress"]) / 60
@@ -181,6 +220,12 @@ while True:
     now = time.time(); ps = procs(); cpu = sum(c for _, c, _, _ in ps); size = progress_size()
     if ps: seen = True
     note_pids(_job, ps)
+    hit = done_hit(a.done_pattern, a.log, a.extra_files)
+    if hit:   # 完了行を検知＝対象0 と同じ扱い。プロセスは停止しない。
+        inbox(f"{a.name}＝完了行を検知（{(now - t0) / 60:.0f}分）",
+              f"ログに完了行が現れたため監視を終了。\n完了行＝{hit}\n合図＝--done-pattern {a.done_pattern}\n"
+              f"停止はしていない（残っているプロセスがあれば別件）。ログ＝{a.log}")
+        break
     if size > last_size or cpu - last_cpu >= a.cpu_min: last_progress = now
     last_size, last_cpu = size, cpu
     elapsed_min = (now - t0) / 60; idle_min = (now - last_progress) / 60
