@@ -23,6 +23,12 @@ JP = {"shakuri": "しゃくり", "kobushi": "こぶし", "vibrato": "ビブラ�
       "accent": "アクセント", "hammering": "ハンマリング", "ALL": "全体"}
 
 
+def ref_used(m):
+    """お手本として実際に学習に使った曲数（被覆の足切りがある版は n_ref_used を優先）。"""
+    d = m.get("n_ref_used") or m.get("n_ref") or {}
+    return d.get("train", "")
+
+
 def raw_all(tag, lag, valid_range):
     """eval_raw.py を走らせ、許容ごとの全体行（再現率・適合率・F値・件数整合）を取り出す。"""
     cmd = [sys.executable, os.path.join(HERE, "eval_raw.py"), "--tag", tag, "--lag", str(lag), "--valid_range", valid_range]
@@ -80,9 +86,10 @@ if __name__ == "__main__":
     with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f)
         w.writerow(["条件", "タグ", "評価", "許容秒", "技法", "正解数", "予測数", "当たりTP", "空振りFP", "見落としFN", "再現率", "適合率", "F値",
-                    "入力の列数", "学習曲数", "お手本ありの学習曲数", "エポック", "乱数の種"])
+                    "入力の列数", "学習曲数", "お手本ありの学習曲数", "お手本として使った学習曲数", "被覆の足切り", "エポック", "乱数の種"])
         for label, tag, m, rw in rows:
-            meta = [m.get("cin", ""), m.get("n_train", ""), (m.get("n_ref") or {}).get("train", ""), m.get("epochs", ""), m.get("seed", "")]
+            meta = [m.get("cin", ""), m.get("n_train", ""), (m.get("n_ref") or {}).get("train", ""), ref_used(m),
+                    m.get("min_ref_frac", 0), m.get("epochs", ""), m.get("seed", "")]
             for tol in ("0.5", "1.0", "2.0"):
                 d = m["metrics"].get(f"test_tol{tol}")
                 if not d:
@@ -105,8 +112,8 @@ if __name__ == "__main__":
           "F値＝見つけたものの正しさ（適合率）と、見落としの少なさ（再現率）を合わせた指標で、1 に近いほど良い値です。",
           "TP＝当たり・FP＝空振り（鳴っていないのに出した）・FN＝見落とし（あったのに出さなかった）。", ""]
     md.append("## 全体の成績（試験＝9/24 の 28 本・吸着ラベルの時刻に対して）")
-    md.append("| 条件 | 許容 | F値 | 当たりTP | 空振りFP | 見落としFN | 再現率 | 適合率 | 入力の列数 | 学習曲数 | お手本ありの学習曲数 | エポック |")
-    md.append("|---|---|---|---|---|---|---|---|---|---|---|---|")
+    md.append("| 条件 | 許容 | F値 | 当たりTP | 空振りFP | 見落としFN | 再現率 | 適合率 | 入力の列数 | 学習曲数 | お手本ありの学習曲数 | お手本として使った学習曲数 | エポック |")
+    md.append("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
     for label, tag, m, rw in rows:
         for tol in ("0.5", "1.0", "2.0"):
             d = m["metrics"].get(f"test_tol{tol}")
@@ -114,7 +121,7 @@ if __name__ == "__main__":
                 continue
             x = d["ALL"]
             md.append(f"| {label} | ±{tol}秒 | {x['f1']} | {x['hit']} | {x['pred'] - x['hit']} | {x['true'] - x['hit']} | {x['recall']} | {x['precision']} | "
-                      f"{m.get('cin','')} | {m.get('n_train','')} | {(m.get('n_ref') or {}).get('train','')} | {m.get('epochs','')} |")
+                      f"{m.get('cin','')} | {m.get('n_train','')} | {(m.get('n_ref') or {}).get('train','')} | {ref_used(m)} | {m.get('epochs','')} |")
     md.append("")
     md.append("## 技法ごとの F値（許容±0.5秒・試験＝9/24 の 28 本）")
     md.append("| 条件 | " + " | ".join(JP[c] for c in TYPES) + " | 全体 |")
@@ -139,7 +146,9 @@ if __name__ == "__main__":
     md.append("## 条件のそろえかた")
     for label, tag, m, rw in rows:
         md.append(f"- {label}（タグ {tag}）＝入力の列数 {m.get('cin','')}・学習 {m.get('n_train','')} 本・しきい値決定 {m.get('n_dev','')} 本・試験 {m.get('n_test','')} 本・"
-                  f"エポック {m.get('epochs','')}・乱数の種 {m.get('seed','')}・バッチ {m.get('bs','')}・お手本ありの本数 {m.get('n_ref','')}・学習にかかった時間 {m.get('elapsed_sec','')}秒")
+                  f"エポック {m.get('epochs','')}・乱数の種 {m.get('seed','')}・バッチ {m.get('bs','')}・お手本ありの本数 {m.get('n_ref','')}・"
+                  f"お手本として使った本数 {m.get('n_ref_used') or m.get('n_ref','')}・被覆の足切り {m.get('min_ref_frac', 0)}・"
+                  f"最良エポック {(m.get('best') or ['','',''])[1]}・学習にかかった時間 {m.get('elapsed_sec','')}秒")
     md_path = f"{a.out_dir}/{a.out_name}.md"
     open(md_path, "w", encoding="utf-8").write("\n".join(md) + "\n")
     print("\n".join(md))
