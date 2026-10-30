@@ -268,7 +268,7 @@ def cmd_run(a):
             v = G.parse_digits(hit.get(c))
             rows.append([s, i, c, "" if v is None else v, ""])
         done[0] += 1
-        if done[0] % 25 == 0:
+        if done[0] % a.hb_every == 0:
             hb("Z %s %d/%d dt=%.0fs" % (a.cand, done[0], ncells // 6, st["dt"]))
 
     if a.cand == "easyocr_readtext":
@@ -444,6 +444,8 @@ def main():
     r.add_argument("--out", required=True)
     r.add_argument("--limit", type=int, default=0, help="試走用＝各曲の先頭この枚数だけ")
     r.add_argument("--every", type=int, default=4, help="標本番号 i が この数の倍数のフレームだけ読む（既定4＝sub4 の全部）")
+    r.add_argument("--hb-every", type=int, default=25,
+                   help="この枚数ごとに heartbeat_z.txt へ進捗を書く（番犬の停滞判定 20分より短くなるように選ぶ）")
     r.add_argument("--shard", type=int, default=0)
     r.add_argument("--nshards", type=int, default=1)
     r.add_argument("--tess-scale", type=float, default=1.0,

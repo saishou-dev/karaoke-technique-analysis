@@ -18,7 +18,10 @@ export OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4 MKL_NUM_THREADS=4
 #   paddle_full      … --every 64（標本番号が64の倍数）
 # 2026-10-30 10:50 追加の制約＝同時2本まで（4コア×2）・nice 15・元動画と帯 npy は1回だけ読む
 # 全部の予測がそろった時点で heartbeat_z.txt に Z_DONE を書く
-export Z_EXPECT="pred_Z_tess_psm11.csv pred_Z_easyocr_readtext.csv pred_Z_paddle_full.csv"
+# 11:47 切り上げ（3時間超の見込み）＝tess_psm11（625/984 で停止）と easyocr_readtext（未着手）を止め、paddle_full だけ残す。
+# 12:12 番犬が paddle_full を停滞と判定して停止（進捗行が25フレームごと＝約50分おきで、停滞判定の20分より長かった）。
+# 12:25 再起動＝--every 64 を2本に分割・--hb-every 1（1フレームごとに進捗行）。
+export Z_EXPECT="${Z_EXPECT:-pred_Z_paddle_full.shard0of2.csv pred_Z_paddle_full.shard1of2.csv}"
 mode="$1"
 if [ "$mode" = "extract" ]; then
   echo "START extract $(date +%F' '%H:%M:%S)" >> "$HB"
