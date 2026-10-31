@@ -12,8 +12,8 @@ v0.8f の中身（材料50・追記 15:11）
   Ai 機の収録（10/6 Ai＝bands_ai・6/28＝bands）。Ai は 10/31 の試し（--ai-test・CHEERS 10/6）で曲末 4/4 一致を確かめて加えた。
   8/7 は帯の切り出し映像が無い（対象外）。
   10/14 は 10/30 の検証2で同じ読み（v2_fullscan.py・同じ見本）が済んでいるので、その npz を写す（--reuse）。
-関心領域（ROI）＝正式結果の曲別 roi.json（<結果>/<曲>/roi.json）。無い収録（8/12〜9/15）は既定 roi_wao.json
-  （run_read_20260915.sh と同じ選び方）。
+関心領域（ROI）＝①較正 ROI（dataset/rescan_<収録>/roi/<曲>.json・現状 9/15 の27曲）②正式結果の曲別 roi.json
+  （<結果>/<曲>/roi.json）③既定 roi_wao.json（8/12・8/18・9/2・9/11）の順（10/31 19:2x 改・旧版は②③だけ＝9/15 を既定で読んだ）。
 参照＝見本追加なしの読みから counter_events を作り、正式結果の counter_events.csv と1行ずつ突き合わせて記録する
   （v0.8e で読んだ収録は IDENTICAL になるはず・v0.8d で読んだ収録は版の差で DIFFERENT になり得る＝記録のみで止めない）。
 
@@ -123,8 +123,11 @@ def task_list(dates):
 
 
 def roi_of(date, song):
-    p = os.path.join(ROOT, SESS[date], song, "roi.json")
-    src = "roi.json"
+    """ROI の選び方（10/31 19:2x 改）＝①較正 ROI dataset/rescan_<収録>/roi/<曲>.json（9/15 の正式な再走査が使った曲別 ROI）
+    ②正式結果の曲別 roi.json ③既定 roi_wao.json の順。旧版は②→③だけで、9/15 を既定 ROI（縦に約20〜28画素ずれ）で読んでいた。"""
+    p, src = os.path.join(ROOT, "dataset", f"rescan_{date}", "roi", song + ".json"), "rescan_roi"
+    if not os.path.exists(p):
+        p, src = os.path.join(ROOT, SESS[date], song, "roi.json"), "roi.json"
     if not os.path.exists(p):
         p, src = DEFAULT_ROI, "roi_wao.json"
     return {k: tuple(v) for k, v in json.load(open(p)).items()}, src
